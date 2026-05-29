@@ -40,14 +40,31 @@ ul {
   padding: 0;
 }
 
+/* ─── App shell: sidebar | note-list | editor-area ─── */
 .app {
   display: grid;
-  grid-template-columns: 200px 280px 1fr 160px;
+  grid-template-columns: 200px 280px 1fr;
   height: 100vh;
   background: #f5f6f8;
 }
 
-/* Sidebar */
+/* Editor area wrapper (third column): toolbar on top, editor+toc below */
+.app > div:last-child {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Editor + TOC row */
+.app > div:last-child > div:last-child {
+  display: grid;
+  grid-template-columns: 1fr 160px;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ─── Sidebar ─── */
 .sidebar {
   display: flex;
   flex-direction: column;
@@ -196,13 +213,61 @@ ul {
   min-width: 0;
 }
 
-/* Note list */
+/* ─── Toolbar (spans full width above content) ─── */
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border-bottom: 1px solid #f0f0f0;
+  flex-shrink: 0;
+  background: #fff;
+}
+
+.editor-toolbar-spacer {
+  flex: 1;
+}
+
+.toolbar-btn {
+  padding: 6px 14px;
+  font-size: 13px;
+  color: #444;
+  border: 1px solid #e0e3e8;
+  border-radius: 8px;
+  background: #fff;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.toolbar-btn:hover {
+  background: #f8f9fa;
+  border-color: #c5cdd8;
+}
+
+.toolbar-btn-active {
+  color: #d97706;
+  border-color: #fcd34d;
+  background: #fffbeb;
+}
+
+.toolbar-btn-primary {
+  color: #fff;
+  background: #3b82f6;
+  border-color: #3b82f6;
+}
+
+.toolbar-btn-primary:hover {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+
+/* ─── Note list ─── */
 .note-list-panel {
   display: flex;
   flex-direction: column;
   background: #fafbfc;
   border-right: 1px solid #e8eaed;
   min-width: 0;
+  min-height: 0;
 }
 
 .panel-header {
@@ -316,57 +381,13 @@ ul {
   border-radius: 4px;
 }
 
-/* Editor */
+/* ─── Editor ─── */
 .editor-panel {
   display: flex;
   flex-direction: column;
   background: #fff;
   min-width: 0;
-}
-
-.editor-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 20px;
-  border-bottom: 1px solid #f0f0f0;
-  flex-shrink: 0;
-}
-
-.editor-toolbar-spacer {
-  flex: 1;
-}
-
-.toolbar-btn {
-  padding: 6px 14px;
-  font-size: 13px;
-  color: #444;
-  border: 1px solid #e0e3e8;
-  border-radius: 8px;
-  background: #fff;
-  transition: background 0.15s, border-color 0.15s;
-}
-
-.toolbar-btn:hover {
-  background: #f8f9fa;
-  border-color: #c5cdd8;
-}
-
-.toolbar-btn-active {
-  color: #d97706;
-  border-color: #fcd34d;
-  background: #fffbeb;
-}
-
-.toolbar-btn-primary {
-  color: #fff;
-  background: #3b82f6;
-  border-color: #3b82f6;
-}
-
-.toolbar-btn-primary:hover {
-  background: #2563eb;
-  border-color: #2563eb;
+  min-height: 0;
 }
 
 .editor-content {
@@ -401,13 +422,14 @@ ul {
   line-height: 1.7;
 }
 
-/* TOC */
+/* ─── TOC ─── */
 .toc-panel {
   display: flex;
   flex-direction: column;
   background: #fafbfc;
   border-left: 1px solid #e8eaed;
   min-width: 0;
+  min-height: 0;
 }
 
 .toc-list {
