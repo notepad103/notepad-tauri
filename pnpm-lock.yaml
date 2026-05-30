@@ -15,20 +15,20 @@ importers:
         specifier: ^2
         version: 2.5.4
       react:
-        specifier: ^19.1.0
+        specifier: ^19.2.0
         version: 19.2.6
       react-dom:
-        specifier: ^19.1.0
+        specifier: ^19.2.0
         version: 19.2.6(react@19.2.6)
     devDependencies:
       '@tauri-apps/cli':
         specifier: ^2
         version: 2.11.2
       '@types/react':
-        specifier: ^19.1.8
+        specifier: ^19.2.0
         version: 19.2.15
       '@types/react-dom':
-        specifier: ^19.1.6
+        specifier: ^19.2.0
         version: 19.2.3(@types/react@19.2.15)
       '@vitejs/plugin-react':
         specifier: ^4.6.0
