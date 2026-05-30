@@ -1,23 +1,37 @@
-import {
-  DB_PATH,
-  categories,
-  navItems,
-  type NavFilter,
-} from "../mock/notes";
+import { useState } from "react";
+import { DB_PATH } from "../mock/notes";
+import { sidebarStore } from "../store/sidebar";
+import { useStore } from "@tanstack/react-store";
 
-interface SidebarProps {
-  activeNav: NavFilter;
-  activeCategory: string | null;
-  onNavChange: (nav: NavFilter) => void;
-  onCategoryChange: (categoryId: string) => void;
-}
+export default function Sidebar() {
+  const { fixedList, customList, selectedId } = useStore(sidebarStore, (state) => state);
+  const [isAdding, setIsAdding] = useState(false);
+  const [newCatLabel, setNewCatLabel] = useState("");
 
-export default function Sidebar({
-  activeNav,
-  activeCategory,
-  onNavChange,
-  onCategoryChange,
-}: SidebarProps) {
+  const handleAddCategory = () => {
+    const trimmed = newCatLabel.trim();
+    if (!trimmed) {
+      setIsAdding(false);
+      return;
+    }
+    if (
+      customList.some(
+        (cat) => cat.label.toLowerCase() === trimmed.toLowerCase(),
+      )
+    ) {
+      alert("分类已存在");
+      return;
+    }
+    const newCat = {
+      id: trimmed.toLowerCase(),
+      label: trimmed,
+      count: 0,
+    };
+    sidebarStore.actions.addCustomCategory(newCat);
+    setNewCatLabel("");
+    setIsAdding(false);
+  };
+
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -25,12 +39,12 @@ export default function Sidebar({
       </div>
 
       <nav className="sidebar-nav">
-        {navItems.map((item) => (
+        {fixedList.map((item) => (
           <button
             key={item.id}
             type="button"
-            className={`nav-item ${activeNav === item.id && !activeCategory ? "nav-item-active" : ""}`}
-            onClick={() => onNavChange(item.id)}
+            className={`nav-item ${selectedId === item.id ? "nav-item-active" : ""}`}
+            onClick={() => sidebarStore.actions.setSelectedId(item.id)}
           >
             <span>{item.label}</span>
             <span className="nav-count">{item.count}</span>
@@ -41,23 +55,54 @@ export default function Sidebar({
       <div className="sidebar-section">
         <div className="sidebar-section-header">
           <span>自定义分类</span>
-          <button type="button" className="icon-btn" aria-label="添加分类">
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="添加分类"
+            onClick={() => setIsAdding(true)}
+          >
             +
           </button>
         </div>
         <ul className="category-list">
-          {categories.map((cat) => (
+          {customList.map((cat) => (
             <li key={cat.id}>
               <button
                 type="button"
-                className={`category-item ${activeCategory === cat.id ? "category-item-active" : ""}`}
-                onClick={() => onCategoryChange(cat.id)}
+                className={`category-item ${selectedId === cat.id ? "category-item-active" : ""}`}
+                onClick={() => sidebarStore.actions.setSelectedId(cat.id)}
               >
                 <span>{cat.label}</span>
                 <span className="nav-count">{cat.count}</span>
               </button>
             </li>
           ))}
+          {isAdding && (
+            <li style={{ padding: "2px 8px" }}>
+              <input
+                type="text"
+                className="search-input"
+                style={{
+                  padding: "6px 10px",
+                  fontSize: "13px",
+                  height: "32px",
+                }}
+                placeholder="新建分类名称"
+                value={newCatLabel}
+                autoFocus
+                onChange={(e) => setNewCatLabel(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    handleAddCategory();
+                  } else if (e.key === "Escape") {
+                    setIsAdding(false);
+                    setNewCatLabel("");
+                  }
+                }}
+                onBlur={handleAddCategory}
+              />
+            </li>
+          )}
         </ul>
       </div>
 

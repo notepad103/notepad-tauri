@@ -111,7 +111,7 @@ ul {
 }
 
 .nav-item-active {
-  background: #3b82f6;
+  background: #3b82f6 !important;
   color: #fff;
 }
 
@@ -164,7 +164,7 @@ ul {
 }
 
 .category-item-active {
-  background: #eff6ff;
+  background: #eff6ff!important;
   color: #2563eb;
   font-weight: 500;
 }

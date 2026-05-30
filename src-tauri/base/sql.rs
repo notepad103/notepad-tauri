@@ -13,7 +13,6 @@ pub fn init_db() -> Result<Connection> {
             is_pinned INTEGER,
             created_at TEXT,
             updated_at TEXT,
-            
         )
         "#,
         [],

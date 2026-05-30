@@ -1,4 +1,6 @@
 import { useMemo, useState } from "react";
+import { useStore } from "@tanstack/react-store";
+import { sidebarStore } from "./store/sidebar";
 import {
   buildToc,
   categoryTagMap,
@@ -14,11 +16,17 @@ import TocPanel from "./components/TocPanel";
 import "./App.css";
 
 function App() {
-  const [activeNav, setActiveNav] = useState<NavFilter>("all");
-  const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const { customList, selectedId } = useStore(sidebarStore, (state) => state);
   const [selectedNoteId, setSelectedNoteId] = useState("2");
   const [searchQuery, setSearchQuery] = useState("");
   const [important, setImportant] = useState(false);
+
+  const isCustomCategory = useMemo(() => {
+    return customList.some((cat) => cat.id === selectedId);
+  }, [customList, selectedId]);
+
+  const activeNav = isCustomCategory ? "all" : (selectedId as NavFilter);
+  const activeCategory = isCustomCategory ? selectedId : null;
 
   const filteredNotes = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -31,28 +39,21 @@ function App() {
       if (activeNav === "important" && !note.tag && note.id !== "2")
         return false;
       if (activeCategory) {
-        const expectedTag = categoryTagMap[activeCategory];
+        const expectedTag =
+          categoryTagMap[activeCategory] ||
+          customList.find((cat) => cat.id === activeCategory)?.label ||
+          activeCategory;
         if (expectedTag && note.tag !== expectedTag) return false;
       }
       return true;
     });
-  }, [searchQuery, activeNav, activeCategory]);
+  }, [searchQuery, activeNav, activeCategory, customList]);
 
   const noteDetail = useMemo(
     () => getNoteDetail(selectedNoteId),
     [selectedNoteId],
   );
   const toc = useMemo(() => buildToc(noteDetail), [noteDetail]);
-
-  const handleNavChange = (nav: NavFilter) => {
-    setActiveNav(nav);
-    setActiveCategory(null);
-  };
-
-  const handleCategoryChange = (categoryId: string) => {
-    setActiveCategory(categoryId);
-    setActiveNav("all");
-  };
 
   const handleSelectNote = (id: string) => {
     setSelectedNoteId(id);
@@ -62,12 +63,7 @@ function App() {
 
   return (
     <div className="app">
-      <Sidebar
-        activeNav={activeNav}
-        activeCategory={activeCategory}
-        onNavChange={handleNavChange}
-        onCategoryChange={handleCategoryChange}
-      />
+      <Sidebar />
 
       <NoteListPanel
         notes={filteredNotes}
