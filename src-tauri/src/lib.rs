@@ -13,8 +13,9 @@ fn greet_two(name: &str) -> String {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    base::sql::init_db();
+pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    base::sql::init_db()?;
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -24,4 +25,5 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+    Ok(())
 }

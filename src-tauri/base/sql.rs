@@ -3,9 +3,8 @@ use std::sync::{LazyLock, Mutex};
 
 const SQLITE_NAME: &str = "notepad.db";
 
-static DB: LazyLock<Mutex<Connection>> = LazyLock::new(|| {
-    Mutex::new(Connection::open(SQLITE_NAME).expect("failed to open database"))
-});
+static DB: LazyLock<Mutex<Connection>> =
+    LazyLock::new(|| Mutex::new(Connection::open(SQLITE_NAME).expect("failed to open database")));
 
 pub fn init_db() -> Result<()> {
     let conn = DB.lock().unwrap();
@@ -28,7 +27,7 @@ pub fn init_db() -> Result<()> {
 
     conn.execute(
         r#"
-        CREATE TABLE IF NOT EXISTS group (
+        CREATE TABLE IF NOT EXISTS note_groups (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             label TEXT NOT NULL,
             sort INTEGER NOT NULL DEFAULT 0,
@@ -46,8 +45,9 @@ pub fn init_db() -> Result<()> {
 pub fn add_group(label: &str) -> Result<(), String> {
     let conn = DB.lock().unwrap();
     conn.execute(
-        "INSERT INTO group (label, sort, created_at) VALUES (?1, 0, strftime('%s', 'now'))",
+        "INSERT INTO note_groups (label, sort, created_at) VALUES (?1, 0, strftime('%s', 'now'))",
         [label],
-    ).map_err(|e| e.to_string());
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
