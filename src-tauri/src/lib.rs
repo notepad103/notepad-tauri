@@ -21,7 +21,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .invoke_handler(tauri::generate_handler![
             greet,
             greet_two,
-            base::sql::add_group
+            base::sql::add_groups,
+            base::sql::get_groups
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

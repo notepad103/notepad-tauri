@@ -42,7 +42,7 @@ pub fn init_db() -> Result<()> {
 }
 
 #[tauri::command]
-pub fn add_group(label: &str) -> Result<(), String> {
+pub fn add_groups(label: &str) -> Result<(), String> {
     let conn = DB.lock().unwrap();
     conn.execute(
         "INSERT INTO note_groups (label, sort, created_at) VALUES (?1, 0, strftime('%s', 'now'))",
@@ -50,4 +50,33 @@ pub fn add_group(label: &str) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+pub struct NoteGroup {
+    id: i64,
+    label: String,
+    sort: i32,
+    created_at: i64,
+}
+
+#[tauri::command]
+pub fn get_groups() -> Result<Vec<NoteGroup>, String> {
+    let conn = DB.lock().unwrap();
+    let mut stmt = conn
+        .prepare("SELECT id, label, sort, created_at FROM note_groups ORDER BY sort, id")
+        .map_err(|e| e.to_string())?;
+    
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(NoteGroup {
+                id: row.get(0)?,
+                label: row.get(1)?,
+                sort: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.map(|row| row.map_err(|e| e.to_string()))
+        .collect()
 }
