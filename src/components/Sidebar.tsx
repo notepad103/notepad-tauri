@@ -1,36 +1,107 @@
-import { useState } from "react";
-import { DB_PATH } from "../mock/notes";
+import { useState, useEffect } from "react";
+import { DB_PATH, type Category } from "../mock/notes";
 import { sidebarStore } from "../store/sidebar";
 import { useStore } from "@tanstack/react-store";
+
+function isDuplicateCategoryLabel(
+  customList: Category[],
+  label: string,
+  excludeId?: string,
+): boolean {
+  const normalized = label.toLowerCase();
+  return customList.some(
+    (cat) =>
+      cat.id !== excludeId && cat.label.toLowerCase() === normalized,
+  );
+}
 
 export default function Sidebar() {
   const { fixedList, customList, selectedId } = useStore(sidebarStore, (state) => state);
   const [isAdding, setIsAdding] = useState(false);
   const [newCatLabel, setNewCatLabel] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editLabel, setEditLabel] = useState("");
 
-  const handleAddCategory = () => {
+  const handleAddCategory = async () => {
     const trimmed = newCatLabel.trim();
     if (!trimmed) {
       setIsAdding(false);
       return;
     }
-    if (
-      customList.some(
-        (cat) => cat.label.toLowerCase() === trimmed.toLowerCase(),
-      )
-    ) {
+    if (isDuplicateCategoryLabel(customList, trimmed)) {
       alert("分类已存在");
       return;
     }
-    const newCat = {
-      id: trimmed.toLowerCase(),
-      label: trimmed,
-      count: 0,
-    };
-    sidebarStore.actions.addCustomCategory(newCat);
-    setNewCatLabel("");
-    setIsAdding(false);
+
+    try {
+      await sidebarStore.actions.addCustomCategory(trimmed);
+      setNewCatLabel("");
+      setIsAdding(false);
+    } catch (err) {
+      console.error(err);
+      alert("保存失败，请重试");
+    }
   };
+
+  const cancelEditIfStill = (id: string) => {
+    setEditingId((current) => {
+      if (current === id) {
+        setEditLabel("");
+        return null;
+      }
+      return current;
+    });
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditLabel("");
+  };
+
+  const startEdit = (cat: Category) => {
+    if (isAdding) {
+      setIsAdding(false);
+      setNewCatLabel("");
+    }
+    setEditingId(cat.id);
+    setEditLabel(cat.label);
+  };
+
+  const handleSaveEdit = async () => {
+    if (editingId === null) return;
+
+    const savingId = editingId;
+    const original = customList.find((cat) => cat.id === savingId);
+    if (!original) {
+      cancelEditIfStill(savingId);
+      return;
+    }
+
+    const trimmed = editLabel.trim();
+    if (!trimmed || trimmed === original.label) {
+      cancelEditIfStill(savingId);
+      return;
+    }
+
+    if (isDuplicateCategoryLabel(customList, trimmed, savingId)) {
+      alert("分类已存在");
+      return;
+    }
+
+    try {
+      await sidebarStore.actions.updateCustomCategory(savingId, trimmed);
+      cancelEditIfStill(savingId);
+    } catch (err) {
+      console.error(err);
+      alert("保存失败，请重试");
+    }
+  };
+
+  useEffect(() => {
+    sidebarStore.actions.getList().catch((err) => {
+      console.error(err);
+    });
+  }, []);
 
   return (
     <aside className="sidebar">
@@ -67,39 +138,60 @@ export default function Sidebar() {
         <ul className="category-list">
           {customList.map((cat) => (
             <li key={cat.id}>
-              <button
-                type="button"
-                className={`category-item ${selectedId === cat.id ? "category-item-active" : ""}`}
-                onClick={() => sidebarStore.actions.setSelectedId(cat.id)}
-              >
-                <span>{cat.label}</span>
-                <span className="nav-count">{cat.count}</span>
-              </button>
+              {editingId === cat.id ? (
+                <div className="category-edit-wrap">
+                  <input
+                    type="text"
+                    className="search-input category-edit-input"
+                    value={editLabel}
+                    autoFocus
+                    onFocus={(e) => e.target.select()}
+                    onChange={(e) => setEditLabel(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        void handleSaveEdit();
+                      } else if (e.key === "Escape") {
+                        cancelEdit();
+                      }
+                    }}
+                    onBlur={() => {
+                      void handleSaveEdit();
+                    }}
+                  />
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className={`category-item ${selectedId === cat.id ? "category-item-active" : ""}`}
+                  onClick={() => sidebarStore.actions.setSelectedId(cat.id)}
+                  onDoubleClick={() => startEdit(cat)}
+                >
+                  <span>{cat.label}</span>
+                  <span className="nav-count">{cat.count}</span>
+                </button>
+              )}
             </li>
           ))}
           {isAdding && (
-            <li style={{ padding: "2px 8px" }}>
+            <li className="category-edit-wrap">
               <input
                 type="text"
-                className="search-input"
-                style={{
-                  padding: "6px 10px",
-                  fontSize: "13px",
-                  height: "32px",
-                }}
+                className="search-input category-edit-input"
                 placeholder="新建分类名称"
                 value={newCatLabel}
                 autoFocus
                 onChange={(e) => setNewCatLabel(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
-                    handleAddCategory();
+                    void handleAddCategory();
                   } else if (e.key === "Escape") {
                     setIsAdding(false);
                     setNewCatLabel("");
                   }
                 }}
-                onBlur={handleAddCategory}
+                onBlur={() => {
+                  void handleAddCategory();
+                }}
               />
             </li>
           )}

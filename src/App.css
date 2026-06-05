@@ -169,6 +169,17 @@ ul {
   font-weight: 500;
 }
 
+.category-edit-wrap {
+  padding: 2px 8px;
+}
+
+.category-edit-input {
+  width: 100%;
+  padding: 6px 10px;
+  height: 32px;
+  font-size: 13px;
+}
+
 .icon-btn {
   width: 22px;
   height: 22px;

@@ -1,20 +1,52 @@
-import type { NoteListItem } from "../mock/notes";
+import { useMemo, useState } from "react";
+import { useStore } from "@tanstack/react-store";
+import { sidebarStore } from "../store/sidebar";
+import {
+  categoryTagMap,
+  noteListItems,
+  type NavFilter,
+} from "../mock/notes";
 
 interface NoteListPanelProps {
-  notes: NoteListItem[];
   selectedNoteId: string;
-  searchQuery: string;
-  onSearchChange: (query: string) => void;
   onSelectNote: (id: string) => void;
 }
 
 export default function NoteListPanel({
-  notes,
   selectedNoteId,
-  searchQuery,
-  onSearchChange,
   onSelectNote,
 }: NoteListPanelProps) {
+  const { customList, selectedId } = useStore(sidebarStore, (state) => state);
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const isCustomCategory = useMemo(() => {
+    return customList.some((cat) => cat.id === selectedId);
+  }, [customList, selectedId]);
+
+  const activeNav = isCustomCategory ? "all" : (selectedId as NavFilter);
+  const activeCategory = isCustomCategory ? selectedId : null;
+
+  const filteredNotes = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return noteListItems.filter((note) => {
+      if (q) {
+        const haystack =
+          `${note.title} ${note.preview} ${note.tag ?? ""}`.toLowerCase();
+        if (!haystack.includes(q)) return false;
+      }
+      if (activeNav === "important" && !note.tag && note.id !== "2")
+        return false;
+      if (activeCategory) {
+        const expectedTag =
+          categoryTagMap[activeCategory] ||
+          customList.find((cat) => cat.id === activeCategory)?.label ||
+          activeCategory;
+        if (expectedTag && note.tag !== expectedTag) return false;
+      }
+      return true;
+    });
+  }, [searchQuery, activeNav, activeCategory, customList]);
+
   return (
     <section className="note-list-panel">
       <header className="panel-header">
@@ -26,11 +58,11 @@ export default function NoteListPanel({
           className="search-input"
           placeholder="输入关键字筛选笔记"
           value={searchQuery}
-          onChange={(e) => onSearchChange(e.target.value)}
+          onChange={(e) => setSearchQuery(e.target.value)}
         />
       </div>
       <ul className="note-cards">
-        {notes.map((note) => (
+        {filteredNotes.map((note) => (
           <li key={note.id}>
             <button
               type="button"

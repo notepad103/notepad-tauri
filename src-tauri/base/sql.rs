@@ -6,6 +6,14 @@ const SQLITE_NAME: &str = "notepad.db";
 static DB: LazyLock<Mutex<Connection>> =
     LazyLock::new(|| Mutex::new(Connection::open(SQLITE_NAME).expect("failed to open database")));
 
+#[derive(serde::Serialize, Debug)]
+pub struct NoteGroup {
+    id: i64,
+    label: String,
+    sort: i32,
+    created_at: i64,
+}
+
 pub fn init_db() -> Result<()> {
     let conn = DB.lock().unwrap();
 
@@ -42,22 +50,20 @@ pub fn init_db() -> Result<()> {
 }
 
 #[tauri::command]
-pub fn add_groups(label: &str) -> Result<(), String> {
+pub fn add_groups(label: &str) -> Result<NoteGroup, String> {
     let conn = DB.lock().unwrap();
-    conn.execute(
-        "INSERT INTO note_groups (label, sort, created_at) VALUES (?1, 0, strftime('%s', 'now'))",
-        [label],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[derive(serde::Serialize)]
-pub struct NoteGroup {
-    id: i64,
-    label: String,
-    sort: i32,
-    created_at: i64,
+    let sql = "INSERT INTO note_groups (label, sort, created_at) VALUES (?1, 0, strftime('%s', 'now')) RETURNING id, label, sort, created_at";
+    let res: NoteGroup = conn
+        .query_row(sql, [label], |row| {
+            Ok(NoteGroup {
+                id: row.get(0)?,
+                label: row.get(1)?,
+                sort: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(res)
 }
 
 #[tauri::command]
@@ -66,7 +72,7 @@ pub fn get_groups() -> Result<Vec<NoteGroup>, String> {
     let mut stmt = conn
         .prepare("SELECT id, label, sort, created_at FROM note_groups ORDER BY sort, id")
         .map_err(|e| e.to_string())?;
-    
+
     let rows = stmt
         .query_map([], |row| {
             Ok(NoteGroup {
@@ -77,6 +83,23 @@ pub fn get_groups() -> Result<Vec<NoteGroup>, String> {
             })
         })
         .map_err(|e| e.to_string())?;
-    rows.map(|row| row.map_err(|e| e.to_string()))
-        .collect()
+    rows.map(|row| row.map_err(|e| e.to_string())).collect()
+}
+
+#[tauri::command]
+pub fn update_group(id: i64, label: &str) -> Result<NoteGroup, String> {
+    let conn = DB.lock().unwrap();
+    let sql_str = "UPDATE note_groups SET label = ?1, updated_at = strftime('%s', 'now') WHERE id = ?2 RETURNING id, label, sort, created_at";
+    let res = conn
+        .query_row(sql_str, (label, id), |row| {
+            Ok(NoteGroup {
+                id: row.get(0)?,
+                label: row.get(1)?,
+                sort: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })
+        .map_err(|err| err.to_string())?;
+
+    Ok(res)
 }
