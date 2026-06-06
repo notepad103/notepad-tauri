@@ -17,13 +17,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     base::sql::init_db()?;
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             greet,
             greet_two,
             base::sql::add_groups,
             base::sql::get_groups,
-            base::sql::update_group
+            base::sql::update_group,
+            base::sql::delete_group
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

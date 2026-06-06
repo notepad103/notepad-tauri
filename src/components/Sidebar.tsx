@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { DB_PATH, type Category } from "../mock/notes";
 import { sidebarStore } from "../store/sidebar";
 import { useStore } from "@tanstack/react-store";
@@ -10,13 +11,15 @@ function isDuplicateCategoryLabel(
 ): boolean {
   const normalized = label.toLowerCase();
   return customList.some(
-    (cat) =>
-      cat.id !== excludeId && cat.label.toLowerCase() === normalized,
+    (cat) => cat.id !== excludeId && cat.label.toLowerCase() === normalized,
   );
 }
 
 export default function Sidebar() {
-  const { fixedList, customList, selectedId } = useStore(sidebarStore, (state) => state);
+  const { fixedList, customList, selectedId } = useStore(
+    sidebarStore,
+    (state) => state,
+  );
   const [isAdding, setIsAdding] = useState(false);
   const [newCatLabel, setNewCatLabel] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -25,11 +28,14 @@ export default function Sidebar() {
   const handleAddCategory = async () => {
     const trimmed = newCatLabel.trim();
     if (!trimmed) {
+      
       setIsAdding(false);
       return;
     }
     if (isDuplicateCategoryLabel(customList, trimmed)) {
       alert("分类已存在");
+      setNewCatLabel("");
+      setIsAdding(false);
       return;
     }
 
@@ -67,6 +73,27 @@ export default function Sidebar() {
     setEditLabel(cat.label);
   };
 
+  const handleDeleteCategory = async (cat: Category) => {
+    const confirmed = await confirm(`确定删除分类「${cat.label}」吗？`, {
+      title: "删除分类",
+      kind: "warning",
+      okLabel: "删除",
+      cancelLabel: "取消",
+    });
+    if (!confirmed) return;
+
+    if (editingId === cat.id) {
+      cancelEdit();
+    }
+
+    try {
+      await sidebarStore.actions.deleteCustomCategory(cat.id);
+    } catch (err) {
+      console.error(err);
+      alert("删除失败，请重试");
+    }
+  };
+
   const handleSaveEdit = async () => {
     if (editingId === null) return;
 
@@ -85,6 +112,7 @@ export default function Sidebar() {
 
     if (isDuplicateCategoryLabel(customList, trimmed, savingId)) {
       alert("分类已存在");
+      
       return;
     }
 
@@ -160,15 +188,28 @@ export default function Sidebar() {
                   />
                 </div>
               ) : (
-                <button
-                  type="button"
-                  className={`category-item ${selectedId === cat.id ? "category-item-active" : ""}`}
+                <div
+                  className="category-item-btn"
                   onClick={() => sidebarStore.actions.setSelectedId(cat.id)}
                   onDoubleClick={() => startEdit(cat)}
                 >
                   <span>{cat.label}</span>
-                  <span className="nav-count">{cat.count}</span>
-                </button>
+                  <div
+                    className={`category-item ${selectedId === cat.id ? "category-item-active" : ""}`}
+                  >
+                    <button
+                      className="icon-btn category-delete-btn"
+                      aria-label="删除分类"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteCategory(cat);
+                      }}
+                    >
+                      ×
+                    </button>
+                    <span className="nav-count">{cat.count}</span>
+                  </div>
+                </div>
               )}
             </li>
           ))}

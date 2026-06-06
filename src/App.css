@@ -146,27 +146,67 @@ ul {
   gap: 2px;
 }
 
-.category-item {
+.category-item-btn {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   width: 100%;
+  min-width: 0;
   padding: 7px 12px;
   border-radius: 8px;
   font-size: 13px;
   color: #444;
   text-align: left;
-  transition: background 0.15s;
+  transition: background 0.15s, color 0.15s;
 }
 
-.category-item:hover {
+.category-item-btn:hover {
   background: #f5f5f5;
 }
 
-.category-item-active {
-  background: #eff6ff!important;
+.category-item-btn:has(.category-item-active) {
+  background: #eff6ff !important;
   color: #2563eb;
   font-weight: 500;
+}
+
+.category-item-btn > span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.category-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.category-item-btn:has(.category-item-active) .nav-count {
+  color: #2563eb;
+}
+
+.category-delete-btn {
+  flex-shrink: 0;
+  opacity: 0;
+  font-size: 15px;
+  line-height: 1;
+  color: #999;
+  transform: translateY(-1px);
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+
+.category-item-btn:hover .category-delete-btn {
+  opacity: 1;
+}
+
+.category-delete-btn:hover {
+  color: #ef4444;
+  background: #fee2e2;
 }
 
 .category-edit-wrap {

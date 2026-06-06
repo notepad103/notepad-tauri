@@ -37,6 +37,7 @@ type SidebarActions = {
   getList: () => Promise<void>;
   addCustomCategory: (label: string) => Promise<void>;
   updateCustomCategory: (id: string, label: string) => Promise<void>;
+  deleteCustomCategory: (id: string) => Promise<void>;
 };
 
 export const sidebarStore = new Store<SidebarState, SidebarActions>(
@@ -90,6 +91,11 @@ export const sidebarStore = new Store<SidebarState, SidebarActions>(
           cat.id === id ? toCategory(group) : cat,
         ),
       }));
+    },
+    async deleteCustomCategory(id) {
+      listRequestId++;
+      await invoke("delete_group", { id: Number(id) });
+      return this.getList();
     },
   }),
 );
