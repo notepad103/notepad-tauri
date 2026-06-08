@@ -14,6 +14,17 @@ pub struct NoteGroup {
     created_at: i64,
 }
 
+#[derive(serde::Serialize, Debug)]
+pub struct Note {
+    id: i64,
+    group_id: Option<i64>,
+    title: String,
+    content: String,
+    is_deleted: bool,
+    is_pinned: bool,
+    created_at: Option<i64>,
+}
+
 pub fn init_db() -> Result<()> {
     let conn = DB.lock().unwrap();
 
@@ -113,3 +124,46 @@ pub fn delete_group(id: i64) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+pub fn add_notes(group_id: i64, title: &str, content: &str) -> Result<Note, String> {
+    let conn = DB.lock().unwrap();
+    let sql_str = r#"
+        INSERT INTO notes (
+            group_id,
+            title,
+            content,
+            is_deleted,
+            is_pinned,
+            created_at
+        ) VALUES (
+            ?1,
+            ?2,
+            ?3,
+            0,
+            0,
+            strftime('%s', 'now')
+        )
+        RETURNING
+            id,
+            group_id,
+            title,
+            content,
+            is_deleted,
+            is_pinned,
+            created_at
+    "#;
+    let res = conn
+        .query_row(sql_str, (group_id, title, content), |row| {
+            Ok(Note {
+                id: row.get(0)?,
+                group_id: row.get(1)?,
+                title: row.get(2)?,
+                content: row.get(3)?,
+                is_deleted: row.get::<_, i64>(4)? != 0,
+                is_pinned: row.get::<_, i64>(5)? != 0,
+                created_at: row.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(res)
+}

@@ -25,7 +25,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             base::sql::add_groups,
             base::sql::get_groups,
             base::sql::update_group,
-            base::sql::delete_group
+            base::sql::delete_group,
+            base::sql::add_notes
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
