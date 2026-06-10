@@ -2,6 +2,7 @@ use rusqlite::{Connection, Result};
 use std::sync::{LazyLock, Mutex};
 
 const SQLITE_NAME: &str = "notepad.db";
+const CATEGORY_NAME_MAX_LENGTH: usize = 20;
 
 static DB: LazyLock<Mutex<Connection>> =
     LazyLock::new(|| Mutex::new(Connection::open(SQLITE_NAME).expect("failed to open database")));
@@ -11,6 +12,7 @@ pub struct NoteGroup {
     id: i64,
     label: String,
     sort: i32,
+    count: i64,
     created_at: i64,
 }
 
@@ -60,17 +62,30 @@ pub fn init_db() -> Result<()> {
     Ok(())
 }
 
+fn validate_group_label(label: &str) -> Result<(), String> {
+    if label.trim().chars().count() > CATEGORY_NAME_MAX_LENGTH {
+        return Err(format!(
+            "分类名称不能超过{}个字",
+            CATEGORY_NAME_MAX_LENGTH
+        ));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn add_groups(label: &str) -> Result<NoteGroup, String> {
+    validate_group_label(label)?;
+
     let conn = DB.lock().unwrap();
-    let sql = "INSERT INTO note_groups (label, sort, created_at) VALUES (?1, 0, strftime('%s', 'now')) RETURNING id, label, sort, created_at";
+    let sql = "INSERT INTO note_groups (label, sort, created_at) VALUES (?1, 0, strftime('%s', 'now')) RETURNING id, label, sort, 0, created_at";
     let res: NoteGroup = conn
         .query_row(sql, [label], |row| {
             Ok(NoteGroup {
                 id: row.get(0)?,
                 label: row.get(1)?,
                 sort: row.get(2)?,
-                created_at: row.get(3)?,
+                count: row.get(3)?,
+                created_at: row.get(4)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -81,7 +96,22 @@ pub fn add_groups(label: &str) -> Result<NoteGroup, String> {
 pub fn get_groups() -> Result<Vec<NoteGroup>, String> {
     let conn = DB.lock().unwrap();
     let mut stmt = conn
-        .prepare("SELECT id, label, sort, created_at FROM note_groups ORDER BY sort, id")
+        .prepare(
+            r#"
+            SELECT
+                note_groups.id,
+                note_groups.label,
+                note_groups.sort,
+                COUNT(notes.id) AS count,
+                note_groups.created_at
+            FROM note_groups
+            LEFT JOIN notes
+                ON notes.group_id = note_groups.id
+                AND notes.is_deleted = 0
+            GROUP BY note_groups.id
+            ORDER BY note_groups.sort, note_groups.id
+            "#,
+        )
         .map_err(|e| e.to_string())?;
 
     let rows = stmt
@@ -90,7 +120,33 @@ pub fn get_groups() -> Result<Vec<NoteGroup>, String> {
                 id: row.get(0)?,
                 label: row.get(1)?,
                 sort: row.get(2)?,
-                created_at: row.get(3)?,
+                count: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.map(|row| row.map_err(|e| e.to_string())).collect()
+}
+
+#[tauri::command]
+pub fn get_notes() -> Result<Vec<Note>, String> {
+    let conn = DB.lock().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, group_id, title, content, is_deleted, is_pinned, created_at FROM notes WHERE is_deleted = 0 ORDER BY is_pinned DESC, created_at DESC, id DESC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(Note {
+                id: row.get(0)?,
+                group_id: row.get(1)?,
+                title: row.get(2)?,
+                content: row.get(3)?,
+                is_deleted: row.get::<_, i64>(4)? != 0,
+                is_pinned: row.get::<_, i64>(5)? != 0,
+                created_at: row.get(6)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -99,15 +155,29 @@ pub fn get_groups() -> Result<Vec<NoteGroup>, String> {
 
 #[tauri::command]
 pub fn update_group(id: i64, label: &str) -> Result<NoteGroup, String> {
+    validate_group_label(label)?;
+
     let conn = DB.lock().unwrap();
-    let sql_str = "UPDATE note_groups SET label = ?1, updated_at = strftime('%s', 'now') WHERE id = ?2 RETURNING id, label, sort, created_at";
+    let sql_str = r#"
+        UPDATE note_groups
+        SET label = ?1,
+            updated_at = strftime('%s', 'now')
+        WHERE id = ?2
+        RETURNING
+            id,
+            label,
+            sort,
+            (SELECT COUNT(*) FROM notes WHERE group_id = ?2 AND is_deleted = 0),
+            created_at
+    "#;
     let res = conn
         .query_row(sql_str, (label, id), |row| {
             Ok(NoteGroup {
                 id: row.get(0)?,
                 label: row.get(1)?,
                 sort: row.get(2)?,
-                created_at: row.get(3)?,
+                count: row.get(3)?,
+                created_at: row.get(4)?,
             })
         })
         .map_err(|err| err.to_string())?;
@@ -125,7 +195,7 @@ pub fn delete_group(id: i64) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn add_notes(group_id: i64, title: &str, content: &str) -> Result<Note, String> {
+pub fn add_notes(group_id: Option<i64>, title: &str, content: &str) -> Result<Note, String> {
     let conn = DB.lock().unwrap();
     let sql_str = r#"
         INSERT INTO notes (
@@ -166,4 +236,115 @@ pub fn add_notes(group_id: i64, title: &str, content: &str) -> Result<Note, Stri
         })
         .map_err(|e| e.to_string())?;
     Ok(res)
+}
+
+#[tauri::command]
+pub fn update_notes(id: i64, title: &str, content: &str) -> Result<Note, String> {
+    let conn = DB.lock().unwrap();
+    let sql_str = r#"
+        UPDATE notes
+        SET title = ?1,
+            content = ?2,
+            updated_at = strftime('%s', 'now')
+        WHERE id = ?3
+        RETURNING
+            id,
+            group_id,
+            title,
+            content,
+            is_deleted,
+            is_pinned,
+            created_at
+    "#;
+    let res = conn
+        .query_row(sql_str, (title, content, id), |row| {
+            Ok(Note {
+                id: row.get(0)?,
+                group_id: row.get(1)?,
+                title: row.get(2)?,
+                content: row.get(3)?,
+                is_deleted: row.get::<_, i64>(4)? != 0,
+                is_pinned: row.get::<_, i64>(5)? != 0,
+                created_at: row.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(res)
+}
+
+#[tauri::command]
+pub fn update_note_group(id: i64, group_id: Option<i64>) -> Result<Note, String> {
+    let conn = DB.lock().unwrap();
+    let sql_str = r#"
+        UPDATE notes
+        SET group_id = ?1,
+            updated_at = strftime('%s', 'now')
+        WHERE id = ?2
+        RETURNING
+            id,
+            group_id,
+            title,
+            content,
+            is_deleted,
+            is_pinned,
+            created_at
+    "#;
+    let res = conn
+        .query_row(sql_str, (group_id, id), |row| {
+            Ok(Note {
+                id: row.get(0)?,
+                group_id: row.get(1)?,
+                title: row.get(2)?,
+                content: row.get(3)?,
+                is_deleted: row.get::<_, i64>(4)? != 0,
+                is_pinned: row.get::<_, i64>(5)? != 0,
+                created_at: row.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(res)
+}
+
+#[tauri::command]
+pub fn update_note_pinned(id: i64, is_pinned: bool) -> Result<Note, String> {
+    let conn = DB.lock().unwrap();
+    let sql_str = r#"
+        UPDATE notes
+        SET is_pinned = ?1,
+            updated_at = strftime('%s', 'now')
+        WHERE id = ?2
+        RETURNING
+            id,
+            group_id,
+            title,
+            content,
+            is_deleted,
+            is_pinned,
+            created_at
+    "#;
+    let res = conn
+        .query_row(sql_str, (is_pinned as i64, id), |row| {
+            Ok(Note {
+                id: row.get(0)?,
+                group_id: row.get(1)?,
+                title: row.get(2)?,
+                content: row.get(3)?,
+                is_deleted: row.get::<_, i64>(4)? != 0,
+                is_pinned: row.get::<_, i64>(5)? != 0,
+                created_at: row.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(res)
+}
+
+#[tauri::command]
+pub fn delete_notes(id: i64) -> Result<(), String> {
+    let conn = DB.lock().unwrap();
+    conn.execute(
+        "UPDATE notes SET is_deleted = 1, updated_at = strftime('%s', 'now') WHERE id = ?1",
+        [id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }

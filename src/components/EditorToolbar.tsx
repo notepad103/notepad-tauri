@@ -1,23 +1,54 @@
+import type { Category } from "../mock/notes";
+
 interface EditorToolbarProps {
-  important: boolean;
+  group_id: number | null;
+  is_pinned: boolean;
+  categories: Category[];
+  onChangeGroup: (group_id: number | null) => void | Promise<void>;
   onToggleImportant: () => void;
+  onCreateNote: () => void | Promise<void>;
 }
 
 export default function EditorToolbar({
-  important,
+  group_id,
+  is_pinned,
+  categories,
+  onChangeGroup,
   onToggleImportant,
+  onCreateNote,
 }: EditorToolbarProps) {
   return (
     <header className="editor-toolbar">
       <div className="editor-toolbar-spacer" />
+      <select
+        className="toolbar-select"
+        value={group_id ?? ""}
+        onChange={(event) => {
+          const value = event.target.value;
+          void onChangeGroup(value ? Number(value) : null);
+        }}
+      >
+        <option value="">无分类</option>
+        {categories.map((category) => (
+          <option key={category.id} value={category.id}>
+            {category.label}
+          </option>
+        ))}
+      </select>
       <button
         type="button"
-        className={`toolbar-btn ${important ? "toolbar-btn-active" : ""}`}
+        className={`toolbar-btn ${is_pinned ? "toolbar-btn-active" : ""}`}
         onClick={onToggleImportant}
       >
-        标记为重要
+        {is_pinned ? "取消标记" : "标记为重要"}
       </button>
-      <button type="button" className="toolbar-btn toolbar-btn-primary">
+      <button
+        type="button"
+        className="toolbar-btn toolbar-btn-primary"
+        onClick={() => {
+          void onCreateNote();
+        }}
+      >
         新建笔记
       </button>
     </header>

@@ -15,7 +15,7 @@
         "title": "notepad-tauri",
         "width": 1200,
         "height": 800,
-        "minWidth": 800,
+        "minWidth": 1600,
         "minHeight": 600
       }
     ],

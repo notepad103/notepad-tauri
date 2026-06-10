@@ -1,16 +1,12 @@
 import { Store } from "@tanstack/react-store";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  navItems,
-  categories,
-  type NavItem,
-  type Category,
-} from "../mock/notes";
+import { navItems, type NavItem, type Category } from "../mock/notes";
 
 interface NoteGroup {
   id: number;
   label: string;
   sort: number;
+  count: number;
   created_at: number;
 }
 
@@ -18,7 +14,7 @@ function toCategory(group: NoteGroup): Category {
   return {
     id: String(group.id),
     label: group.label,
-    count: 0,
+    count: group.count,
   };
 }
 
@@ -43,7 +39,7 @@ type SidebarActions = {
 export const sidebarStore = new Store<SidebarState, SidebarActions>(
   {
     fixedList: navItems,
-    customList: categories,
+    customList: [],
     selectedId: "all",
   },
   (store) => ({

@@ -4,6 +4,12 @@ import { DB_PATH, type Category } from "../mock/notes";
 import { sidebarStore } from "../store/sidebar";
 import { useStore } from "@tanstack/react-store";
 
+const CATEGORY_NAME_MAX_LENGTH = 20;
+
+function limitCategoryLabel(label: string): string {
+  return Array.from(label).slice(0, CATEGORY_NAME_MAX_LENGTH).join("");
+}
+
 function isDuplicateCategoryLabel(
   customList: Category[],
   label: string,
@@ -26,7 +32,7 @@ export default function Sidebar() {
   const [editLabel, setEditLabel] = useState("");
 
   const handleAddCategory = async () => {
-    const trimmed = newCatLabel.trim();
+    const trimmed = limitCategoryLabel(newCatLabel.trim());
     if (!trimmed) {
       
       setIsAdding(false);
@@ -104,7 +110,7 @@ export default function Sidebar() {
       return;
     }
 
-    const trimmed = editLabel.trim();
+    const trimmed = limitCategoryLabel(editLabel.trim());
     if (!trimmed || trimmed === original.label) {
       cancelEditIfStill(savingId);
       return;
@@ -174,7 +180,10 @@ export default function Sidebar() {
                     value={editLabel}
                     autoFocus
                     onFocus={(e) => e.target.select()}
-                    onChange={(e) => setEditLabel(e.target.value)}
+                    maxLength={CATEGORY_NAME_MAX_LENGTH}
+                    onChange={(e) =>
+                      setEditLabel(limitCategoryLabel(e.target.value))
+                    }
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         void handleSaveEdit();
@@ -221,7 +230,10 @@ export default function Sidebar() {
                 placeholder="新建分类名称"
                 value={newCatLabel}
                 autoFocus
-                onChange={(e) => setNewCatLabel(e.target.value)}
+                maxLength={CATEGORY_NAME_MAX_LENGTH}
+                onChange={(e) =>
+                  setNewCatLabel(limitCategoryLabel(e.target.value))
+                }
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     void handleAddCategory();

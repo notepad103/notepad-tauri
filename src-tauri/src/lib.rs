@@ -24,9 +24,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             greet_two,
             base::sql::add_groups,
             base::sql::get_groups,
+            base::sql::get_notes,
             base::sql::update_group,
             base::sql::delete_group,
-            base::sql::add_notes
+            base::sql::add_notes,
+            base::sql::update_notes,
+            base::sql::update_note_group,
+            base::sql::update_note_pinned,
+            base::sql::delete_notes
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
