@@ -10,6 +10,8 @@ import { contentToSections, normalizePreview } from "../utils/markdown";
 interface DbNote {
   id: number;
   group_id: number | null;
+  source_note_id: number | null;
+  source_term: string | null;
   title: string;
   content: string;
   is_deleted: boolean;
@@ -24,6 +26,10 @@ interface NotesState {
 
 type AddNoteParams = {
   group_id: number | null;
+  title?: string;
+  content?: string;
+  source_note_id?: number | null;
+  source_term?: string | null;
 };
 
 type NotesActions = {
@@ -62,6 +68,8 @@ function toNoteListItem(note: DbNote): NoteListItem {
     id: `db-${note.id}`,
     note_id: note.id,
     group_id: note.group_id,
+    source_note_id: note.source_note_id,
+    source_term: note.source_term,
     title: note.title,
     content: note.content,
     is_deleted: note.is_deleted,
@@ -77,6 +85,8 @@ function toNoteDetail(note: DbNote): NoteDetail {
     id: `db-${note.id}`,
     note_id: note.id,
     group_id: note.group_id,
+    source_note_id: note.source_note_id,
+    source_term: note.source_term,
     title: note.title,
     content: note.content,
     is_deleted: note.is_deleted,
@@ -173,11 +183,19 @@ export const notesStore = new Store<NotesState, NotesActions>(
     },
     getNoteDetail: (id) =>
       store.get().details[id] ?? createEmptyNoteDetail(id),
-    addNote: async ({ group_id }) => {
+    addNote: async ({
+      group_id,
+      title = "未命名笔记",
+      content = "",
+      source_note_id = null,
+      source_term = null,
+    }) => {
       const note = await invoke<DbNote>("add_notes", {
         groupId: group_id,
-        title: "未命名笔记",
-        content: "",
+        title,
+        content,
+        sourceNoteId: source_note_id,
+        sourceTerm: source_term,
       });
       const detail = toNoteDetail(note);
 

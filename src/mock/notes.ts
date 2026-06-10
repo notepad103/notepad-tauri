@@ -16,6 +16,8 @@ export interface NoteListItem {
   id: string;
   note_id?: number;
   group_id: number | null;
+  source_note_id?: number | null;
+  source_term?: string | null;
   title: string;
   content: string;
   is_deleted: boolean;
@@ -36,6 +38,8 @@ export interface NoteDetail {
   id: string;
   note_id?: number;
   group_id: number | null;
+  source_note_id?: number | null;
+  source_term?: string | null;
   title: string;
   content?: string;
   is_deleted: boolean;
@@ -43,9 +47,6 @@ export interface NoteDetail {
   created_at: number | null;
   sections: NoteSection[];
 }
-
-export const DB_PATH =
-  "/Users/weilongfei/Library/Application Support/com.notepad-tauri/notes.db";
 
 export const navItems: NavItem[] = [
   { id: "all", label: "全部笔记", count: 0 },
@@ -57,6 +58,8 @@ export function createEmptyNoteDetail(id = ""): NoteDetail {
   return {
     id,
     group_id: null,
+    source_note_id: null,
+    source_term: null,
     title: "未命名笔记",
     content: "",
     is_deleted: false,

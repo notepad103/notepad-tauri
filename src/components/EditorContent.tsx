@@ -21,8 +21,10 @@ import { isHtmlContent, markdownToHtml, slug } from "../utils/markdown";
 
 interface EditorContentProps {
   noteDetail: NoteDetail;
+  sourceNoteTitle?: string;
   onChangeTitle: (title: string) => void;
   onChangeNote: (title: string, content: string) => void | Promise<void>;
+  onOpenSourceNote?: () => void;
 }
 
 function sectionsToMarkdown(noteDetail: NoteDetail): string {
@@ -61,8 +63,10 @@ function scheduleHeadingIds(container: HTMLElement | null) {
 
 export default function EditorContent({
   noteDetail,
+  sourceNoteTitle,
   onChangeTitle,
   onChangeNote,
+  onOpenSourceNote,
 }: EditorContentProps) {
   const [title, setTitle] = useState(noteDetail.title);
   const [content, setContent] = useState(
@@ -81,7 +85,7 @@ export default function EditorContent({
   const editor = useEditor({
     extensions: [
       StarterKit,
-      ResizableImage.configure({ inline: false }),
+      ResizableImage.configure({ inline: false, allowBase64: true }),
       SearchHighlight,
     ],
     content: normalEditorContent,
@@ -248,6 +252,19 @@ export default function EditorContent({
             }}
             onBlur={saveNote}
           />
+          {sourceNoteTitle && onOpenSourceNote && (
+            <div className="source-note-row">
+              <span className="source-note-label">来源文章</span>
+              <button
+                type="button"
+                className="source-note-button"
+                title={`跳转到「${sourceNoteTitle}」`}
+                onClick={onOpenSourceNote}
+              >
+                {sourceNoteTitle}
+              </button>
+            </div>
+          )}
           <div
             className="tiptap-editor-wrap"
             onClick={focusEditorFromWrap}

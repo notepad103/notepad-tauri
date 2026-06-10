@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import { DB_PATH, type Category } from "../mock/notes";
+import { type Category } from "../mock/notes";
 import { sidebarStore } from "../store/sidebar";
 import { useStore } from "@tanstack/react-store";
 
@@ -21,6 +22,34 @@ function isDuplicateCategoryLabel(
   );
 }
 
+async function copyText(value: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch (err) {
+      console.warn("navigator.clipboard.writeText failed, falling back", err);
+    }
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+
+  try {
+    const copied = document.execCommand("copy");
+    if (!copied) {
+      throw new Error("document.execCommand('copy') returned false");
+    }
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
 export default function Sidebar() {
   const { fixedList, customList, selectedId } = useStore(
     sidebarStore,
@@ -30,6 +59,10 @@ export default function Sidebar() {
   const [newCatLabel, setNewCatLabel] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editLabel, setEditLabel] = useState("");
+  const [dbPath, setDbPath] = useState("");
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">(
+    "idle",
+  );
 
   const handleAddCategory = async () => {
     const trimmed = limitCategoryLabel(newCatLabel.trim());
@@ -131,11 +164,38 @@ export default function Sidebar() {
     }
   };
 
+  const handleCopyDbPath = async () => {
+    if (!dbPath) return;
+
+    try {
+      await copyText(dbPath);
+      setCopyStatus("copied");
+    } catch (err) {
+      console.error(err);
+      setCopyStatus("failed");
+    }
+  };
+
   useEffect(() => {
     sidebarStore.actions.getList().catch((err) => {
       console.error(err);
     });
   }, []);
+
+  useEffect(() => {
+    invoke<string>("get_db_path")
+      .then(setDbPath)
+      .catch((err) => {
+        console.error(err);
+        setDbPath("SQLite 路径读取失败");
+      });
+  }, []);
+
+  useEffect(() => {
+    if (copyStatus === "idle") return;
+    const timer = window.setTimeout(() => setCopyStatus("idle"), 1800);
+    return () => window.clearTimeout(timer);
+  }, [copyStatus]);
 
   return (
     <aside className="sidebar">
@@ -254,13 +314,29 @@ export default function Sidebar() {
       <footer className="sidebar-footer">
         <p className="footer-label">本地 SQLite 持久化</p>
         <div className="footer-path">
-          <span className="footer-path-text" title={DB_PATH}>
-            {DB_PATH}
+          <span className="footer-path-text" title={dbPath}>
+            {dbPath || "正在读取 SQLite 路径..."}
           </span>
-          <button type="button" className="icon-btn" aria-label="复制路径">
-            ⧉
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="复制路径"
+            title={
+              copyStatus === "copied"
+                ? "已复制"
+                : copyStatus === "failed"
+                  ? "复制失败"
+                  : "复制路径"
+            }
+            disabled={!dbPath || dbPath === "SQLite 路径读取失败"}
+            onClick={handleCopyDbPath}
+          >
+            {copyStatus === "copied" ? "✓" : "⧉"}
           </button>
         </div>
+        {copyStatus === "failed" && (
+          <p className="footer-copy-status">复制失败，请手动选择路径</p>
+        )}
       </footer>
     </aside>
   );
