@@ -130,6 +130,18 @@ struct AiClient {
     api_key: String,
 }
 
+struct RewooEvidence<'a> {
+    label: &'a str,
+    content: &'a str,
+}
+
+struct RewooPrompt<'a> {
+    objective: &'a str,
+    plan: &'a [&'a str],
+    evidence: &'a [RewooEvidence<'a>],
+    output_contract: &'a str,
+}
+
 impl AiMessage {
     fn system(content: impl Into<String>) -> Self {
         Self {
@@ -409,6 +421,30 @@ fn normalize_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn build_rewoo_prompt(task: RewooPrompt<'_>) -> String {
+    let plan = task
+        .plan
+        .iter()
+        .enumerate()
+        .map(|(index, step)| format!("{}. {}", index + 1, step))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let evidence = task
+        .evidence
+        .iter()
+        .map(|item| format!("## {}\n{}", item.label, item.content.trim()))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    format!(
+        "请按 ReWOO（Reasoning without Observation）工作流处理任务：先依据 Plan 在 Evidence 中定位信息，再整合为最终结果。不要输出推理过程、计划执行过程或中间观察，只输出 Output Contract 要求的最终结果。\n\n# Objective\n{}\n\n# Plan\n{}\n\n# Evidence\n{}\n\n# Output Contract\n{}",
+        task.objective.trim(),
+        plan,
+        evidence,
+        task.output_contract.trim()
+    )
+}
+
 fn strip_json_fence(content: &str) -> &str {
     let trimmed = content.trim();
     if let Some(text) = trimmed.strip_prefix("```json") {
@@ -528,18 +564,43 @@ fn build_term_supplement_prompt(
         return Err("当前文章内容太短，无法结合主题解释名词".to_string());
     }
 
-    Ok(format!(
-        "请结合文章主题为指定名词补充说明。要求：用中文；不要覆盖、复述或改写已有简释；不要泛泛百科化；输出 Markdown，不要输出 JSON；必须只返回两个二级标题小节，标题分别是“## 结合文章的补充说明”和“## 适用场景和示例”。第一节说明它在本文中的具体含义、为什么重要、和文章主旨的关系，控制在 360 字以内。第二节必须写 2 到 3 组，每组都必须包含“场景：”和“示例：”，且“示例：”必须另起一行写在对应场景下面，禁止把场景和示例合并到同一行；示例要是具体句子、具体操作、具体案例或贴近本文的具体情境，不要只写抽象用途，第二节控制在 440 字以内。\n\n第二节必须严格使用这个换行格式：\n**场景 1：** 在读者需要判断某个概念对本文结论的影响时。\n**示例：** 如果文章在讨论成本结构，就说明这个名词如何改变成本测算。\n\n**场景 2：** 在把文章观点迁移到实际决策时。\n**示例：** 用一个具体业务选择展示这个名词如何参与判断。\n\n文章标题：{}\n名词：{}\n已有简释：{}\n已有上下文：{}\n文章内容：\n{}",
-        if source_title.is_empty() {
-            "未命名笔记"
-        } else {
-            source_title
-        },
+    let title_evidence = if source_title.is_empty() {
+        "未命名笔记"
+    } else {
+        source_title
+    };
+    let term_evidence = format!(
+        "名词：{}\n已有简释：{}\n已有上下文：{}",
         clean_term,
         explanation.trim(),
-        context.trim(),
-        article
-    ))
+        context.trim()
+    );
+    let output_contract = "用中文；不要覆盖、复述或改写已有简释；不要泛泛百科化；输出 Markdown，不要输出 JSON；必须只返回两个二级标题小节，标题分别是“## 结合文章的补充说明”和“## 适用场景和示例”。第一节说明它在本文中的具体含义、为什么重要、和文章主旨的关系，控制在 360 字以内。第二节必须写 2 到 3 组，每组都必须包含“场景：”和“示例：”，且“示例：”必须另起一行写在对应场景下面，禁止把场景和示例合并到同一行；示例要是具体句子、具体操作、具体案例或贴近本文的具体情境，不要只写抽象用途，第二节控制在 440 字以内。\n\n第二节必须严格使用这个换行格式：\n**场景 1：** 在读者需要判断某个概念对本文结论的影响时。\n**示例：** 如果文章在讨论成本结构，就说明这个名词如何改变成本测算。\n\n**场景 2：** 在把文章观点迁移到实际决策时。\n**示例：** 用一个具体业务选择展示这个名词如何参与判断。";
+
+    Ok(build_rewoo_prompt(RewooPrompt {
+        objective: "结合文章主题为指定名词补充说明。",
+        plan: &[
+            "识别指定名词在文章中的出现语境和承担的作用。",
+            "用已有简释作为边界，避免重复百科定义。",
+            "提炼该名词与文章主旨的关系，并补充可落地的场景和示例。",
+            "按 Output Contract 输出最终 Markdown。",
+        ],
+        evidence: &[
+            RewooEvidence {
+                label: "文章标题",
+                content: title_evidence,
+            },
+            RewooEvidence {
+                label: "指定名词和已有解释",
+                content: &term_evidence,
+            },
+            RewooEvidence {
+                label: "文章内容",
+                content: &article,
+            },
+        ],
+        output_contract,
+    }))
 }
 
 fn parse_knowledge_graph(content: &str) -> Option<KnowledgeGraph> {
@@ -567,12 +628,27 @@ pub async fn summarize_webpage(url: String) -> Result<WebpageSummary, String> {
         .map_err(|err| format!("网页内容读取失败：{}", err))?;
 
     let (source_title, readable_text) = page_text(&html, &parsed_url)?;
-    let prompt = format!(
-        "请把下面的网页内容整理成一篇可直接保存的 AI 阅读笔记，而不是普通摘要。要求：用中文；保留关键结论、事实、数据和行动建议；如图片信息与正文理解有关，在 Markdown 正文中用简短说明保留，并可使用 ![说明](图片地址) 引用图片；忽略广告、推广、赞助、导航、评论、相关推荐、订阅弹窗等非正文内容；输出严格 JSON，格式为 {{\"title\":\"不超过24字的中文笔记标题\",\"summary\":\"Markdown 正文\"}}。\n\nsummary 必须使用下面固定 Markdown 结构：\n## 一句话概览\n用 1 到 2 句话说明这篇网页最值得记住的内容。\n\n## 关键内容\n用 3 到 6 条列表提炼主要观点、论据或步骤。\n\n## 重要事实和数据\n用列表保留网页中的关键事实、数字、时间、人物、产品、机构或出处；如果原文没有明确事实数据，写“- 原文没有提供明确数据”。\n\n## 值得解释的名词\n列出 3 到 8 个影响理解的专业名词、缩写、机构名、背景概念或技术术语，并用一句话说明为什么值得解释；不要罗列普通词。\n\n## 行动建议或启发\n用 2 到 4 条列表写出读者可以如何使用这篇内容，建议要具体。\n\n网页标题：{}\n网页地址：{}\n网页正文：\n{}",
-        source_title,
-        parsed_url,
-        readable_text
-    );
+    let page_meta = format!("网页标题：{}\n网页地址：{}", source_title, parsed_url);
+    let prompt = build_rewoo_prompt(RewooPrompt {
+        objective: "把网页内容整理成一篇可直接保存的 AI 阅读笔记，而不是普通摘要。",
+        plan: &[
+            "从网页正文中定位核心结论、主要事实、数字、时间、人物、产品、机构和行动建议。",
+            "过滤广告、推广、赞助、导航、评论、相关推荐、订阅弹窗等非正文内容。",
+            "保留影响理解的专业名词、缩写、机构名、背景概念或技术术语。",
+            "按 Output Contract 生成严格 JSON。",
+        ],
+        evidence: &[
+            RewooEvidence {
+                label: "网页元信息",
+                content: &page_meta,
+            },
+            RewooEvidence {
+                label: "网页正文",
+                content: &readable_text,
+            },
+        ],
+        output_contract: "用中文；保留关键结论、事实、数据和行动建议；如图片信息与正文理解有关，在 Markdown 正文中用简短说明保留，并可使用 ![说明](图片地址) 引用图片；输出严格 JSON，格式为 {\"title\":\"不超过24字的中文笔记标题\",\"summary\":\"Markdown 正文\"}。\n\nsummary 必须使用下面固定 Markdown 结构：\n## 一句话概览\n用 1 到 2 句话说明这篇网页最值得记住的内容。\n\n## 关键内容\n用 3 到 6 条列表提炼主要观点、论据或步骤。\n\n## 重要事实和数据\n用列表保留网页中的关键事实、数字、时间、人物、产品、机构或出处；如果原文没有明确事实数据，写“- 原文没有提供明确数据”。\n\n## 值得解释的名词\n列出 3 到 8 个影响理解的专业名词、缩写、机构名、背景概念或技术术语，并用一句话说明为什么值得解释；不要罗列普通词。\n\n## 行动建议或启发\n用 2 到 4 条列表写出读者可以如何使用这篇内容，建议要具体。",
+    });
 
     let content = AiClient::new()?
         .chat_text(
@@ -606,15 +682,31 @@ pub async fn explain_article_terms(title: String, content: String) -> Result<Vec
         return Err("当前文章内容太短，无法分析需要解释的名词".to_string());
     }
 
-    let prompt = format!(
-        "请分析下面这篇文章，找出读者可能需要解释的专业名词、缩写、概念、机构名、技术术语或背景概念。要求：只选真正影响理解的名词，不要罗列普通词；最多 12 个；用中文解释；输出严格 JSON，格式为 {{\"terms\":[{{\"term\":\"名词\",\"explanation\":\"一句话简明定义\",\"context\":\"它在本文中的含义或必要背景\"}}]}}。\n\n文章标题：{}\n文章内容：\n{}",
-        if source_title.is_empty() {
-            "未命名笔记"
-        } else {
-            source_title
-        },
-        article
-    );
+    let title_evidence = if source_title.is_empty() {
+        "未命名笔记"
+    } else {
+        source_title
+    };
+    let prompt = build_rewoo_prompt(RewooPrompt {
+        objective: "分析文章并找出读者可能需要解释的关键名词。",
+        plan: &[
+            "浏览文章标题和正文，识别影响理解的专业名词、缩写、概念、机构名、技术术语或背景概念。",
+            "过滤普通词、泛泛概念和不影响理解的词。",
+            "为每个入选名词写一句话简明定义和本文语境背景。",
+            "按 Output Contract 输出严格 JSON。",
+        ],
+        evidence: &[
+            RewooEvidence {
+                label: "文章标题",
+                content: title_evidence,
+            },
+            RewooEvidence {
+                label: "文章内容",
+                content: &article,
+            },
+        ],
+        output_contract: "只选真正影响理解的名词，不要罗列普通词；最多 12 个；用中文解释；输出严格 JSON，格式为 {\"terms\":[{\"term\":\"名词\",\"explanation\":\"一句话简明定义\",\"context\":\"它在本文中的含义或必要背景\"}]}。",
+    });
 
     let content = AiClient::new()?
         .chat_text(
@@ -691,18 +783,41 @@ pub async fn generate_term_knowledge_graph(
         return Err("当前文章内容太短，无法生成知识图谱".to_string());
     }
 
-    let prompt = format!(
-        "请围绕指定名词，结合文章主题生成局部知识图谱。要求：中心节点必须是该名词；节点总数 5 到 9 个；只包含文章语境中真正相关的概念、对象、机制或背景；关系标签要短，例如“影响”“依赖”“属于”“导致”“对比”“应用于”；输出严格 JSON，不要 Markdown，不要解释。格式为 {{\"nodes\":[{{\"id\":\"稳定英文或拼音ID\",\"label\":\"节点名称\",\"node_type\":\"term|concept|entity|mechanism|background\"}}],\"edges\":[{{\"source\":\"节点ID\",\"target\":\"节点ID\",\"label\":\"关系\",\"description\":\"一句话说明关系\"}}]}}。\n\n文章标题：{}\n中心名词：{}\n已有简释：{}\n已有上下文：{}\n文章内容：\n{}",
-        if source_title.is_empty() {
-            "未命名笔记"
-        } else {
-            source_title
-        },
+    let title_evidence = if source_title.is_empty() {
+        "未命名笔记"
+    } else {
+        source_title
+    };
+    let term_evidence = format!(
+        "中心名词：{}\n已有简释：{}\n已有上下文：{}",
         clean_term,
         explanation.trim(),
-        context.trim(),
-        article
+        context.trim()
     );
+    let prompt = build_rewoo_prompt(RewooPrompt {
+        objective: "围绕指定名词，结合文章主题生成局部知识图谱。",
+        plan: &[
+            "确认中心名词及其在文章中的语境。",
+            "从文章中抽取真正相关的概念、对象、机制或背景节点。",
+            "判断节点之间在本文语境下的关系，并写短关系标签和一句话说明。",
+            "按 Output Contract 输出可渲染的严格 JSON。",
+        ],
+        evidence: &[
+            RewooEvidence {
+                label: "文章标题",
+                content: title_evidence,
+            },
+            RewooEvidence {
+                label: "中心名词和已有解释",
+                content: &term_evidence,
+            },
+            RewooEvidence {
+                label: "文章内容",
+                content: &article,
+            },
+        ],
+        output_contract: "中心节点必须是该名词；节点总数 5 到 9 个；只包含文章语境中真正相关的概念、对象、机制或背景；关系标签要短，例如“影响”“依赖”“属于”“导致”“对比”“应用于”；输出严格 JSON，不要 Markdown，不要解释。格式为 {\"nodes\":[{\"id\":\"稳定英文或拼音ID\",\"label\":\"节点名称\",\"node_type\":\"term|concept|entity|mechanism|background\"}],\"edges\":[{\"source\":\"节点ID\",\"target\":\"节点ID\",\"label\":\"关系\",\"description\":\"一句话说明关系\"}]}。",
+    });
 
     let content = AiClient::new()?
         .chat_text(
