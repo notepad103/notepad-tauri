@@ -735,7 +735,87 @@ function App() {
         onNavigate={closeSettings}
       />
 
-      {settingsOpen ? (
+      <NoteListPanel
+        selectedNoteId={selectedNoteId}
+        onCreateNote={handleCreateNote}
+        onDeleteNote={handleDeleteNote}
+        onSelectNote={handleSelectNote}
+      />
+
+      <div className="editor-shell">
+        <EditorToolbar
+          group_id={noteDetail.group_id}
+          is_pinned={is_pinned}
+          categories={customList}
+          aiTermsLoading={aiTermsLoading}
+          hasSelectedNote={Boolean(selectedNoteId)}
+          onChangeGroup={handleChangeGroup}
+          onToggleImportant={handleToggleImportant}
+          onCreateNote={handleCreateNote}
+          onOpenWebSummary={() => {
+            setWebSummaryError("");
+            setWebSummaryOpen(true);
+          }}
+          onExplainTerms={handleExplainTerms}
+        />
+        {selectedNoteId ? (
+          <div className="editor-workspace">
+            <EditorContent
+              key={noteDetail.id}
+              noteDetail={noteDetail}
+              sourceNoteTitle={sourceNoteTitle}
+              onChangeTitle={handleChangeTitle}
+              onChangeNote={handleChangeNote}
+              onOpenSourceNote={
+                sourceNoteTitle ? handleOpenSourceNote : undefined
+              }
+            />
+            <TocPanel
+              toc={toc}
+              terms={termPanelTerms}
+              aiTermsLoading={aiTermsLoading}
+              onSelectTerm={handleSelectTerm}
+              onOpenArticle={handleSelectNote}
+              onRegenerateTerms={handleExplainTerms}
+            />
+          </div>
+        ) : (
+          <main className="editor-empty-panel">
+            <div className="editor-empty-content" role="status">
+              <div className="editor-empty-illustration" aria-hidden="true">
+                <span />
+              </div>
+              <h2>选择或新建一条笔记</h2>
+              <p>
+                当前没有可编辑内容。新建笔记后，标题、正文和目录会在这里展开。
+              </p>
+              <div className="editor-empty-actions">
+                <button
+                  type="button"
+                  className="toolbar-btn toolbar-btn-primary"
+                  onClick={() => {
+                    void handleCreateNote();
+                  }}
+                >
+                  新建笔记
+                </button>
+                <button
+                  type="button"
+                  className="toolbar-btn"
+                  onClick={() => {
+                    setWebSummaryError("");
+                    setWebSummaryOpen(true);
+                  }}
+                >
+                  AI 总结网页
+                </button>
+              </div>
+            </div>
+          </main>
+        )}
+      </div>
+
+      {settingsOpen && (
         <div
           className={`settings-shell ${
             settingsClosing ? "settings-shell-closing" : ""
@@ -743,88 +823,6 @@ function App() {
         >
           <SettingsPage onClose={closeSettings} />
         </div>
-      ) : (
-        <>
-          <NoteListPanel
-            selectedNoteId={selectedNoteId}
-            onCreateNote={handleCreateNote}
-            onDeleteNote={handleDeleteNote}
-            onSelectNote={handleSelectNote}
-          />
-
-          <div className="editor-shell">
-            <EditorToolbar
-              group_id={noteDetail.group_id}
-              is_pinned={is_pinned}
-              categories={customList}
-              aiTermsLoading={aiTermsLoading}
-              hasSelectedNote={Boolean(selectedNoteId)}
-              onChangeGroup={handleChangeGroup}
-              onToggleImportant={handleToggleImportant}
-              onCreateNote={handleCreateNote}
-              onOpenWebSummary={() => {
-                setWebSummaryError("");
-                setWebSummaryOpen(true);
-              }}
-              onExplainTerms={handleExplainTerms}
-            />
-            {selectedNoteId ? (
-              <div className="editor-workspace">
-                <EditorContent
-                  key={noteDetail.id}
-                  noteDetail={noteDetail}
-                  sourceNoteTitle={sourceNoteTitle}
-                  onChangeTitle={handleChangeTitle}
-                  onChangeNote={handleChangeNote}
-                  onOpenSourceNote={
-                    sourceNoteTitle ? handleOpenSourceNote : undefined
-                  }
-                />
-                <TocPanel
-                  toc={toc}
-                  terms={termPanelTerms}
-                  aiTermsLoading={aiTermsLoading}
-                  onSelectTerm={handleSelectTerm}
-                  onOpenArticle={handleSelectNote}
-                  onRegenerateTerms={handleExplainTerms}
-                />
-              </div>
-            ) : (
-              <main className="editor-empty-panel">
-                <div className="editor-empty-content" role="status">
-                  <div className="editor-empty-illustration" aria-hidden="true">
-                    <span />
-                  </div>
-                  <h2>选择或新建一条笔记</h2>
-                  <p>
-                    当前没有可编辑内容。新建笔记后，标题、正文和目录会在这里展开。
-                  </p>
-                  <div className="editor-empty-actions">
-                    <button
-                      type="button"
-                      className="toolbar-btn toolbar-btn-primary"
-                      onClick={() => {
-                        void handleCreateNote();
-                      }}
-                    >
-                      新建笔记
-                    </button>
-                    <button
-                      type="button"
-                      className="toolbar-btn"
-                      onClick={() => {
-                        setWebSummaryError("");
-                        setWebSummaryOpen(true);
-                      }}
-                    >
-                      AI 总结网页
-                    </button>
-                  </div>
-                </div>
-              </main>
-            )}
-          </div>
-        </>
       )}
       <WebSummaryDialog
         open={webSummaryOpen}
