@@ -12,12 +12,18 @@ interface TocPanelProps {
     term: string;
     explanation: string;
     context: string;
+    status?: "idle" | "article";
+    articleNoteId?: string;
+    isActive?: boolean;
   }>;
+  aiTermsLoading?: boolean;
   onSelectTerm: (term: {
     term: string;
     explanation: string;
     context: string;
   }) => void;
+  onOpenArticle?: (noteId: string) => void;
+  onRegenerateTerms?: () => void | Promise<void>;
 }
 
 function scrollEditorToTarget(id: string) {
@@ -46,7 +52,14 @@ function scrollEditorToTarget(id: string) {
   });
 }
 
-export default function TocPanel({ toc, terms, onSelectTerm }: TocPanelProps) {
+export default function TocPanel({
+  toc,
+  terms,
+  aiTermsLoading = false,
+  onSelectTerm,
+  onOpenArticle,
+  onRegenerateTerms,
+}: TocPanelProps) {
   return (
     <aside className="toc-panel">
       <header className="panel-header">
@@ -74,20 +87,52 @@ export default function TocPanel({ toc, terms, onSelectTerm }: TocPanelProps) {
       <section className="term-panel-section">
         <header className="term-panel-header">
           <h2>名词</h2>
+          {onRegenerateTerms && (
+            <button
+              type="button"
+              className="term-regenerate-btn"
+              disabled={aiTermsLoading}
+              onClick={() => {
+                void onRegenerateTerms();
+              }}
+            >
+              {aiTermsLoading ? "生成中..." : terms.length ? "重新生成" : "生成"}
+            </button>
+          )}
         </header>
         <ul className="term-list">
-          {terms.map((term) => (
-            <li key={term.term}>
-              <button
-                type="button"
-                className="term-chip"
-                title={[term.explanation, term.context].filter(Boolean).join("\n")}
-                onClick={() => onSelectTerm(term)}
-              >
-                {term.term}
-              </button>
-            </li>
-          ))}
+          {terms.map((term) => {
+            const canOpenArticle = Boolean(term.articleNoteId);
+            return (
+              <li key={term.term}>
+                <div className={`term-chip ${term.isActive ? "term-chip-active" : ""}`}>
+                  <button
+                    type="button"
+                    className="term-chip-name"
+                    title={[term.explanation, term.context].filter(Boolean).join("\n")}
+                    onClick={() => onSelectTerm(term)}
+                  >
+                    {term.term}
+                  </button>
+                  {term.status === "article" && (
+                    <button
+                      type="button"
+                      className="term-article-link-btn"
+                      aria-label={`打开「${term.term}」生成的文章`}
+                      title="打开生成的文章"
+                      disabled={!canOpenArticle}
+                      onClick={() => {
+                        if (!term.articleNoteId) return;
+                        onOpenArticle?.(term.articleNoteId);
+                      }}
+                    >
+                      文
+                    </button>
+                  )}
+                </div>
+              </li>
+            );
+          })}
           {!terms.length && (
             <li className="term-empty">
               点击工具栏 AI 名词解释生成名词

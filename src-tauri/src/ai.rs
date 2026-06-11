@@ -1,88 +1,18 @@
+use crate::webpage::page_text;
 use futures_util::StreamExt;
 use reqwest::Url;
-use scraper::{ElementRef, Html, Selector};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::{collections::HashSet, env, fs, path::PathBuf, time::Duration};
+use std::{env, fs, path::PathBuf, time::Duration};
 use tauri::ipc::Channel;
 
 const DEEPSEEK_API_URL: &str = "https://api.deepseek.com/chat/completions";
-const DEEPSEEK_MODEL: &str = "deepseek-v4-pro";
-const WEBPAGE_TEXT_LIMIT: usize = 18_000;
-const WEBPAGE_IMAGE_LIMIT: usize = 12;
-const WEBPAGE_MIN_TEXT_LENGTH: usize = 30;
+const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-pro";
+const DEEPSEEK_MODELS: &[&str] = &["deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"];
 const ARTICLE_TEXT_LIMIT: usize = 20_000;
 const AI_TIMEOUT_SECS: u64 = 45;
-const NOISE_ATTRIBUTE_KEYWORDS: &[&str] = &[
-    "ad",
-    "ads",
-    "advert",
-    "advertisement",
-    "sponsor",
-    "sponsored",
-    "promo",
-    "promoted",
-    "recommend",
-    "related",
-    "sidebar",
-    "nav",
-    "menu",
-    "footer",
-    "header",
-    "comment",
-    "comments",
-    "share",
-    "social",
-    "subscribe",
-    "newsletter",
-    "cookie",
-    "banner",
-    "popup",
-    "modal",
-    "breadcrumb",
-    "toolbar",
-    "widget",
-    "paywall",
-    "广告",
-    "推广",
-    "赞助",
-    "推荐",
-    "相关阅读",
-    "评论",
-    "分享",
-    "订阅",
-    "导航",
-    "菜单",
-    "侧栏",
-    "页脚",
-    "弹窗",
-    "横幅",
-];
-const NOISE_TEXT_KEYWORDS: &[&str] = &[
-    "广告",
-    "推广",
-    "赞助",
-    "相关阅读",
-    "相关推荐",
-    "推荐阅读",
-    "点击查看",
-    "打开app",
-    "打开 app",
-    "下载app",
-    "下载 app",
-    "扫码",
-    "关注我们",
-    "分享至",
-    "登录后",
-    "注册后",
-    "更多精彩",
-    "版权所有",
-    "免责声明",
-    "advertisement",
-    "sponsored",
-    "subscribe",
-    "newsletter",
-];
+const DEEPSEEK_API_KEY_ENV: &str = "DEEPSEEK_API_KEY";
+const DEEPSEEK_MODEL_ENV: &str = "DEEPSEEK_MODEL";
 
 #[derive(Serialize)]
 pub struct WebpageSummary {
@@ -94,6 +24,14 @@ pub struct WebpageSummary {
 pub struct AiNoteDraft {
     title: String,
     content: String,
+}
+
+#[derive(Serialize)]
+pub struct AiSettings {
+    model: String,
+    available_models: Vec<&'static str>,
+    api_key_configured: bool,
+    key_source: String,
 }
 
 #[derive(Deserialize)]
@@ -145,7 +83,7 @@ pub struct AiMessage {
 
 #[derive(Serialize)]
 struct ChatRequest {
-    model: &'static str,
+    model: String,
     messages: Vec<AiMessage>,
     temperature: f32,
     stream: bool,
@@ -187,14 +125,6 @@ struct SummaryJson {
     summary: String,
 }
 
-#[derive(Clone)]
-struct PageImage {
-    src: String,
-    alt: String,
-    title: String,
-    caption: String,
-}
-
 struct AiClient {
     http: reqwest::Client,
     api_key: String,
@@ -230,7 +160,7 @@ impl AiClient {
         temperature: f32,
     ) -> Result<String, String> {
         let request = ChatRequest {
-            model: DEEPSEEK_MODEL,
+            model: deepseek_model(),
             messages,
             temperature,
             stream: false,
@@ -265,7 +195,7 @@ impl AiClient {
         channel: Channel<StreamEvent>,
     ) -> Result<(), String> {
         let request = ChatRequest {
-            model: DEEPSEEK_MODEL,
+            model: deepseek_model(),
             messages,
             temperature,
             stream: true,
@@ -334,7 +264,7 @@ fn build_http_client(user_agent: &str) -> Result<reqwest::Client, String> {
         .map_err(|err| err.to_string())
 }
 
-fn read_env_local_key() -> Option<String> {
+fn env_local_candidates() -> Vec<PathBuf> {
     let mut candidates = vec![PathBuf::from(".env.local")];
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     candidates.push(manifest_dir.join(".env.local"));
@@ -343,6 +273,10 @@ fn read_env_local_key() -> Option<String> {
     }
 
     candidates
+}
+
+fn read_env_local_value(key: &str) -> Option<String> {
+    env_local_candidates()
         .into_iter()
         .find_map(|path| fs::read_to_string(path).ok())
         .and_then(|content| {
@@ -351,15 +285,35 @@ fn read_env_local_key() -> Option<String> {
                 if line.starts_with('#') || line.is_empty() {
                     return None;
                 }
-                line.strip_prefix("DEEPSEEK_API_KEY=")
+                line.strip_prefix(&format!("{}=", key))
                     .map(|value| value.trim_matches('"').trim_matches('\'').to_string())
             })
         })
-        .filter(|key| !key.is_empty())
+        .filter(|value| !value.is_empty())
+}
+
+fn read_env_local_key() -> Option<String> {
+    read_env_local_value(DEEPSEEK_API_KEY_ENV)
+}
+
+fn env_local_key_source() -> Option<String> {
+    env_local_candidates().into_iter().find_map(|path| {
+        let content = fs::read_to_string(&path).ok()?;
+        content.lines().find_map(|line| {
+            let line = line.trim();
+            if line.starts_with('#') || line.is_empty() {
+                return None;
+            }
+            line.strip_prefix(&format!("{}=", DEEPSEEK_API_KEY_ENV))
+                .map(|value| value.trim_matches('"').trim_matches('\'').to_string())
+                .filter(|key| !key.is_empty())
+                .map(|_| path.to_string_lossy().into_owned())
+        })
+    })
 }
 
 fn deepseek_api_key() -> Result<String, String> {
-    env::var("DEEPSEEK_API_KEY")
+    env::var(DEEPSEEK_API_KEY_ENV)
         .ok()
         .filter(|key| !key.trim().is_empty())
         .or_else(read_env_local_key)
@@ -368,382 +322,163 @@ fn deepseek_api_key() -> Result<String, String> {
         })
 }
 
+fn deepseek_model() -> String {
+    env::var(DEEPSEEK_MODEL_ENV)
+        .ok()
+        .filter(|model| !model.trim().is_empty())
+        .or_else(|| read_env_local_value(DEEPSEEK_MODEL_ENV))
+        .unwrap_or_else(|| DEFAULT_DEEPSEEK_MODEL.to_string())
+}
+
+fn ai_settings() -> AiSettings {
+    let env_key_configured = env::var(DEEPSEEK_API_KEY_ENV)
+        .ok()
+        .is_some_and(|key| !key.trim().is_empty());
+    let env_local_source = env_local_key_source();
+
+    AiSettings {
+        model: deepseek_model(),
+        available_models: DEEPSEEK_MODELS.to_vec(),
+        api_key_configured: env_key_configured || env_local_source.is_some(),
+        key_source: if env_key_configured {
+            "环境变量".to_string()
+        } else if env_local_source.is_some() {
+            ".env.local".to_string()
+        } else {
+            "未配置".to_string()
+        },
+    }
+}
+
+fn write_env_local_value(key: &str, value: &str) -> Result<(), String> {
+    let path = PathBuf::from(".env.local");
+    let current = fs::read_to_string(&path).unwrap_or_default();
+    let next_line = format!("{}={}", key, value.trim());
+    let mut replaced = false;
+    let mut lines = current
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with(&format!("{}=", key)) {
+                replaced = true;
+                next_line.clone()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if !replaced {
+        lines.push(next_line);
+    }
+
+    fs::write(&path, format!("{}\n", lines.join("\n"))).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub fn get_ai_settings() -> Result<AiSettings, String> {
+    Ok(ai_settings())
+}
+
+#[tauri::command]
+pub fn save_deepseek_api_key(api_key: String) -> Result<AiSettings, String> {
+    let clean_key = api_key.trim();
+    if clean_key.is_empty() {
+        return Err("请输入 DeepSeek API Key".to_string());
+    }
+
+    write_env_local_value(DEEPSEEK_API_KEY_ENV, clean_key)?;
+    env::set_var(DEEPSEEK_API_KEY_ENV, clean_key);
+
+    Ok(ai_settings())
+}
+
+#[tauri::command]
+pub fn save_deepseek_model(model: String) -> Result<AiSettings, String> {
+    let clean_model = model.trim();
+    if clean_model.is_empty() {
+        return Err("请选择模型".to_string());
+    }
+
+    write_env_local_value(DEEPSEEK_MODEL_ENV, clean_model)?;
+    env::set_var(DEEPSEEK_MODEL_ENV, clean_model);
+
+    Ok(ai_settings())
+}
+
 fn normalize_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn candidate_image_url(element: &ElementRef<'_>) -> Option<String> {
-    [
-        "data-src",
-        "data-original",
-        "data-lazy-src",
-        "data-actualsrc",
-        "data-image",
-        "data-url",
-        "src",
-    ]
-    .into_iter()
-    .filter_map(|attr| element.attr(attr))
-    .map(str::trim)
-    .find(|value| !value.is_empty())
-    .map(ToString::to_string)
-    .or_else(|| {
-        element
-            .attr("srcset")
-            .or_else(|| element.attr("data-srcset"))
-            .and_then(largest_srcset_candidate)
-    })
-}
-
-fn largest_srcset_candidate(srcset: &str) -> Option<String> {
-    srcset
-        .split(',')
-        .filter_map(|candidate| candidate.split_whitespace().next())
-        .filter(|src| !src.is_empty())
-        .last()
-        .map(ToString::to_string)
-}
-
-fn absolute_image_url(page_url: &Url, raw_src: &str) -> Option<String> {
-    let src = raw_src.trim();
-    if src.is_empty()
-        || src.starts_with("data:")
-        || src.starts_with("blob:")
-        || src.starts_with('#')
-    {
-        return None;
+fn strip_json_fence(content: &str) -> &str {
+    let trimmed = content.trim();
+    if let Some(text) = trimmed.strip_prefix("```json") {
+        return text.strip_suffix("```").unwrap_or(text).trim();
     }
-
-    page_url
-        .join(src)
-        .ok()
-        .filter(|url| matches!(url.scheme(), "http" | "https"))
-        .map(|url| url.to_string())
-}
-
-fn image_caption(element: &ElementRef<'_>, caption_selector: &Selector) -> String {
-    element
-        .ancestors()
-        .filter_map(ElementRef::wrap)
-        .find(|ancestor| ancestor.value().name() == "figure")
-        .and_then(|figure| figure.select(caption_selector).next())
-        .map(|caption| normalize_whitespace(&caption.text().collect::<Vec<_>>().join(" ")))
-        .filter(|caption| !caption.is_empty())
-        .unwrap_or_default()
-}
-
-fn json_string_field<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
-    value.get(field).and_then(Value::as_str).filter(|text| {
-        let text = text.trim();
-        !text.is_empty()
-    })
-}
-
-fn json_description(value: &Value) -> Option<String> {
-    match value {
-        Value::Array(items) => items.iter().find_map(json_description),
-        Value::Object(_) => json_string_field(value, "description")
-            .map(normalize_whitespace)
-            .or_else(|| {
-                value
-                    .get("@graph")
-                    .and_then(|graph| graph.as_array())
-                    .and_then(|items| items.iter().find_map(json_description))
-            }),
-        _ => None,
+    if let Some(text) = trimmed.strip_prefix("```") {
+        return text.strip_suffix("```").unwrap_or(text).trim();
     }
+    trimmed
 }
 
-fn json_image_urls(value: &Value) -> Vec<String> {
-    match value {
-        Value::String(url) => vec![url.to_string()],
-        Value::Array(items) => items.iter().flat_map(json_image_urls).collect(),
-        Value::Object(_) => json_string_field(value, "url")
-            .or_else(|| json_string_field(value, "contentUrl"))
-            .map(|url| vec![url.to_string()])
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    }
-}
+fn extract_json_object(content: &str) -> Option<&str> {
+    let mut start = None;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
 
-fn page_description(document: &Html) -> Option<String> {
-    [
-        r#"meta[name="description"]"#,
-        r#"meta[property="og:description"]"#,
-        r#"meta[name="twitter:description"]"#,
-    ]
-    .into_iter()
-    .filter_map(|selector| Selector::parse(selector).ok())
-    .find_map(|selector| {
-        document
-            .select(&selector)
-            .next()
-            .and_then(|meta| meta.attr("content"))
-            .map(normalize_whitespace)
-            .filter(|content| !content.is_empty())
-    })
-    .or_else(|| {
-        let selector = Selector::parse(r#"script[type="application/ld+json"]"#).ok()?;
-        document.select(&selector).find_map(|script| {
-            let text = script.text().collect::<String>();
-            serde_json::from_str::<Value>(&text)
-                .ok()
-                .and_then(|value| json_description(&value))
-        })
-    })
-}
-
-fn element_noise_signature(element: &ElementRef<'_>) -> String {
-    ["id", "class", "role", "aria-label"]
-        .into_iter()
-        .filter_map(|attr| element.attr(attr))
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
-}
-
-fn is_noise_element(element: &ElementRef<'_>) -> bool {
-    let tag_name = element.value().name();
-    if matches!(tag_name, "script" | "style" | "noscript" | "svg" | "iframe") {
-        return true;
-    }
-    if matches!(tag_name, "html" | "body") {
-        return false;
-    }
-
-    let signature = element_noise_signature(element);
-    !signature.is_empty()
-        && NOISE_ATTRIBUTE_KEYWORDS
-            .iter()
-            .any(|keyword| signature.contains(keyword))
-}
-
-fn has_noise_ancestor(element: &ElementRef<'_>) -> bool {
-    is_noise_element(element)
-        || element
-            .ancestors()
-            .filter_map(ElementRef::wrap)
-            .any(|ancestor| is_noise_element(&ancestor))
-}
-
-fn is_noise_text(text: &str) -> bool {
-    let normalized = normalize_whitespace(text);
-    if normalized.is_empty() {
-        return true;
-    }
-
-    let lower = normalized.to_lowercase();
-    let char_count = normalized.chars().count();
-    char_count <= 80
-        && NOISE_TEXT_KEYWORDS
-            .iter()
-            .any(|keyword| lower.contains(&keyword.to_lowercase()))
-}
-
-fn page_title(document: &Html) -> String {
-    let selector = Selector::parse("title").unwrap();
-    document
-        .select(&selector)
-        .next()
-        .map(|title| normalize_whitespace(&title.text().collect::<String>()))
-        .filter(|title| !title.is_empty())
-        .unwrap_or_else(|| "网页总结".to_string())
-}
-
-fn collect_page_images(
-    content: &ElementRef<'_>,
-    page_url: &Url,
-    seen: &mut HashSet<String>,
-    image_selector: &Selector,
-    caption_selector: &Selector,
-) -> Vec<PageImage> {
-    content
-        .select(image_selector)
-        .filter(|image| !has_noise_ancestor(image))
-        .filter_map(|image| {
-            let src = candidate_image_url(&image)
-                .and_then(|raw_src| absolute_image_url(page_url, &raw_src))?;
-            if !seen.insert(src.clone()) {
-                return None;
+    for (index, ch) in content.char_indices() {
+        if start.is_none() {
+            if ch == '{' {
+                start = Some(index);
+                depth = 1;
             }
-
-            let alt = image
-                .attr("alt")
-                .map(normalize_whitespace)
-                .unwrap_or_default();
-            let title = image
-                .attr("title")
-                .map(normalize_whitespace)
-                .unwrap_or_default();
-            let caption = image_caption(&image, caption_selector);
-
-            Some(PageImage {
-                src,
-                alt,
-                title,
-                caption,
-            })
-        })
-        .collect()
-}
-
-fn collect_structured_data_images(
-    document: &Html,
-    page_url: &Url,
-    seen: &mut HashSet<String>,
-) -> Vec<PageImage> {
-    let Ok(selector) = Selector::parse(r#"script[type="application/ld+json"]"#) else {
-        return Vec::new();
-    };
-
-    document
-        .select(&selector)
-        .filter_map(|script| {
-            let text = script.text().collect::<String>();
-            serde_json::from_str::<Value>(&text).ok()
-        })
-        .flat_map(|value| {
-            value
-                .get("image")
-                .map(json_image_urls)
-                .unwrap_or_default()
-                .into_iter()
-        })
-        .filter_map(|raw_src| absolute_image_url(page_url, &raw_src))
-        .filter(|src| seen.insert(src.clone()))
-        .map(|src| PageImage {
-            src,
-            alt: String::new(),
-            title: String::new(),
-            caption: String::new(),
-        })
-        .collect()
-}
-
-fn image_context_text(images: &[PageImage]) -> String {
-    if images.is_empty() {
-        return String::new();
-    }
-
-    let lines = images
-        .iter()
-        .take(WEBPAGE_IMAGE_LIMIT)
-        .enumerate()
-        .map(|(index, image)| {
-            let description = [
-                (!image.alt.is_empty()).then(|| format!("alt：{}", image.alt)),
-                (!image.title.is_empty()).then(|| format!("title：{}", image.title)),
-                (!image.caption.is_empty()).then(|| format!("caption：{}", image.caption)),
-            ]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join("；");
-
-            if description.is_empty() {
-                format!("{}. {}", index + 1, image.src)
-            } else {
-                format!("{}. {} ({})", index + 1, image.src, description)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    format!("\n\n图片信息：\n{}", lines)
-}
-
-fn page_text(html: &str, page_url: &Url) -> Result<(String, String), String> {
-    let document = Html::parse_document(html);
-    let title = page_title(&document);
-    let description = page_description(&document);
-    let content_selector = Selector::parse(
-        r#"article, main, [role="main"], .article, .post, .entry-content, .post-content, .article-content, .content, body"#,
-    )
-    .map_err(|err| err.to_string())?;
-    let block_selector = Selector::parse(
-        "h1, h2, h3, h4, p, li, blockquote, pre, .content, .content-d-bot, .pin-content, .pin-content-row, [data-jj-helper=\"pin-content\"]",
-    )
-    .map_err(|err| err.to_string())?;
-    let image_selector = Selector::parse("img").map_err(|err| err.to_string())?;
-    let caption_selector = Selector::parse("figcaption").map_err(|err| err.to_string())?;
-
-    let mut best_text = String::new();
-    let mut best_images = Vec::new();
-    let mut seen_page_images = HashSet::new();
-
-    for content in document.select(&content_selector) {
-        if has_noise_ancestor(&content) {
             continue;
         }
 
-        let mut seen = HashSet::new();
-        let blocks = content
-            .select(&block_selector)
-            .filter(|block| !has_noise_ancestor(block))
-            .filter_map(|block| {
-                let text = normalize_whitespace(&block.text().collect::<Vec<_>>().join(" "));
-                if is_noise_text(&text) || !seen.insert(text.clone()) {
-                    return None;
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    let end = index + ch.len_utf8();
+                    return start.map(|start| &content[start..end]);
                 }
-                Some(text)
-            })
-            .collect::<Vec<_>>();
-        let candidate = blocks.join("\n");
-        let images = collect_page_images(
-            &content,
-            page_url,
-            &mut seen_page_images,
-            &image_selector,
-            &caption_selector,
-        );
-
-        if candidate.chars().count() > best_text.chars().count() {
-            best_text = candidate;
-            best_images = images;
+            }
+            _ => {}
         }
     }
 
-    let mut text = best_text.trim().to_string();
-    if text.chars().count() < WEBPAGE_MIN_TEXT_LENGTH {
-        if let Some(description) = description {
-            text = description;
-        }
-    }
+    None
+}
 
-    let meaningful_len = format!("{} {}", title, text).chars().count();
-    if text.chars().count() < WEBPAGE_MIN_TEXT_LENGTH
-        && meaningful_len < WEBPAGE_MIN_TEXT_LENGTH * 2
-    {
-        return Err("网页正文太短，无法生成有效总结".to_string());
-    }
-
-    best_images.extend(collect_structured_data_images(
-        &document,
-        page_url,
-        &mut seen_page_images,
-    ));
-    let readable_content = format!("{}{}", text, image_context_text(&best_images));
-
-    Ok((
-        title,
-        readable_content.chars().take(WEBPAGE_TEXT_LIMIT).collect(),
-    ))
+fn parse_ai_json<T: DeserializeOwned>(content: &str) -> Option<T> {
+    let fenced = strip_json_fence(content);
+    serde_json::from_str::<T>(fenced)
+        .ok()
+        .or_else(|| extract_json_object(fenced).and_then(|json| serde_json::from_str(json).ok()))
+        .or_else(|| extract_json_object(content).and_then(|json| serde_json::from_str(json).ok()))
 }
 
 fn parse_ai_note(content: &str, raw_markdown_title: &str) -> AiNoteDraft {
     let trimmed = content.trim();
-    let json_text = trimmed
-        .strip_prefix("```json")
-        .and_then(|text| text.strip_suffix("```"))
-        .or_else(|| {
-            trimmed
-                .strip_prefix("```")
-                .and_then(|text| text.strip_suffix("```"))
-        })
-        .unwrap_or(trimmed)
-        .trim();
 
-    if let Ok(parsed) = serde_json::from_str::<SummaryJson>(json_text) {
+    if let Some(parsed) = parse_ai_json::<SummaryJson>(trimmed) {
         return AiNoteDraft {
             title: parsed.title.trim().to_string(),
             content: parsed.summary.trim().to_string(),
@@ -764,19 +499,7 @@ fn compact_article_content(content: &str) -> String {
 }
 
 fn parse_terms(content: &str) -> Vec<AiTerm> {
-    let trimmed = content.trim();
-    let json_text = trimmed
-        .strip_prefix("```json")
-        .and_then(|text| text.strip_suffix("```"))
-        .or_else(|| {
-            trimmed
-                .strip_prefix("```")
-                .and_then(|text| text.strip_suffix("```"))
-        })
-        .unwrap_or(trimmed)
-        .trim();
-
-    serde_json::from_str::<AiTermsJson>(json_text)
+    parse_ai_json::<AiTermsJson>(content)
         .map(|parsed| {
             parsed
                 .terms
@@ -806,7 +529,7 @@ fn build_term_supplement_prompt(
     }
 
     Ok(format!(
-        "请结合文章主题为指定名词补充说明。要求：用中文；不要覆盖、复述或改写已有简释；只补充它在本文中的具体含义、为什么重要、和文章主旨的关系；不要泛泛百科化；输出 Markdown，不要输出 JSON；控制在 250 字以内。\n\n文章标题：{}\n名词：{}\n已有简释：{}\n已有上下文：{}\n文章内容：\n{}",
+        "请结合文章主题为指定名词补充说明。要求：用中文；不要覆盖、复述或改写已有简释；不要泛泛百科化；输出 Markdown，不要输出 JSON；必须只返回两个二级标题小节，标题分别是“## 结合文章的补充说明”和“## 适用场景和示例”。第一节说明它在本文中的具体含义、为什么重要、和文章主旨的关系，控制在 360 字以内。第二节必须写 2 到 3 组，每组都必须包含“场景：”和“示例：”，且“示例：”必须另起一行写在对应场景下面，禁止把场景和示例合并到同一行；示例要是具体句子、具体操作、具体案例或贴近本文的具体情境，不要只写抽象用途，第二节控制在 440 字以内。\n\n第二节必须严格使用这个换行格式：\n**场景 1：** 在读者需要判断某个概念对本文结论的影响时。\n**示例：** 如果文章在讨论成本结构，就说明这个名词如何改变成本测算。\n\n**场景 2：** 在把文章观点迁移到实际决策时。\n**示例：** 用一个具体业务选择展示这个名词如何参与判断。\n\n文章标题：{}\n名词：{}\n已有简释：{}\n已有上下文：{}\n文章内容：\n{}",
         if source_title.is_empty() {
             "未命名笔记"
         } else {
@@ -820,19 +543,7 @@ fn build_term_supplement_prompt(
 }
 
 fn parse_knowledge_graph(content: &str) -> Option<KnowledgeGraph> {
-    let trimmed = content.trim();
-    let json_text = trimmed
-        .strip_prefix("```json")
-        .and_then(|text| text.strip_suffix("```"))
-        .or_else(|| {
-            trimmed
-                .strip_prefix("```")
-                .and_then(|text| text.strip_suffix("```"))
-        })
-        .unwrap_or(trimmed)
-        .trim();
-
-    serde_json::from_str::<KnowledgeGraph>(json_text).ok()
+    parse_ai_json(content)
 }
 
 #[tauri::command]
@@ -857,7 +568,7 @@ pub async fn summarize_webpage(url: String) -> Result<WebpageSummary, String> {
 
     let (source_title, readable_text) = page_text(&html, &parsed_url)?;
     let prompt = format!(
-        "请总结下面的网页内容。要求：用中文；保留关键结论、事实、数据和行动建议；如图片信息与正文理解有关，在 Markdown 正文中用简短说明保留，并可使用 ![说明](图片地址) 引用图片；忽略广告、推广、赞助、导航、评论、相关推荐、订阅弹窗等非正文内容；输出严格 JSON，格式为 {{\"title\":\"不超过24字的中文笔记标题\",\"summary\":\"Markdown 正文\"}}。\n\n网页标题：{}\n网页地址：{}\n网页正文：\n{}",
+        "请把下面的网页内容整理成一篇可直接保存的 AI 阅读笔记，而不是普通摘要。要求：用中文；保留关键结论、事实、数据和行动建议；如图片信息与正文理解有关，在 Markdown 正文中用简短说明保留，并可使用 ![说明](图片地址) 引用图片；忽略广告、推广、赞助、导航、评论、相关推荐、订阅弹窗等非正文内容；输出严格 JSON，格式为 {{\"title\":\"不超过24字的中文笔记标题\",\"summary\":\"Markdown 正文\"}}。\n\nsummary 必须使用下面固定 Markdown 结构：\n## 一句话概览\n用 1 到 2 句话说明这篇网页最值得记住的内容。\n\n## 关键内容\n用 3 到 6 条列表提炼主要观点、论据或步骤。\n\n## 重要事实和数据\n用列表保留网页中的关键事实、数字、时间、人物、产品、机构或出处；如果原文没有明确事实数据，写“- 原文没有提供明确数据”。\n\n## 值得解释的名词\n列出 3 到 8 个影响理解的专业名词、缩写、机构名、背景概念或技术术语，并用一句话说明为什么值得解释；不要罗列普通词。\n\n## 行动建议或启发\n用 2 到 4 条列表写出读者可以如何使用这篇内容，建议要具体。\n\n网页标题：{}\n网页地址：{}\n网页正文：\n{}",
         source_title,
         parsed_url,
         readable_text
@@ -873,9 +584,9 @@ pub async fn summarize_webpage(url: String) -> Result<WebpageSummary, String> {
         )
         .await?;
 
-    let mut summary = parse_ai_note(&content, &format!("AI总结：{}", source_title));
+    let mut summary = parse_ai_note(&content, &format!("AI阅读：{}", source_title));
     if summary.title.is_empty() {
-        summary.title = format!("AI总结：{}", source_title);
+        summary.title = format!("AI阅读：{}", source_title);
     }
     if summary.content.is_empty() {
         return Err("DeepSeek 返回了空总结".to_string());
@@ -921,27 +632,6 @@ pub async fn explain_article_terms(title: String, content: String) -> Result<Vec
     }
 
     Ok(terms)
-}
-
-#[tauri::command]
-pub async fn explain_article_term(
-    title: String,
-    content: String,
-    term: String,
-    explanation: String,
-    context: String,
-) -> Result<String, String> {
-    let prompt = build_term_supplement_prompt(&title, &content, &term, &explanation, &context)?;
-
-    AiClient::new()?
-        .chat_text(
-            vec![
-                AiMessage::system("你是一个擅长结合文章语境解释概念的中文知识助手。"),
-                AiMessage::user(prompt),
-            ],
-            0.2,
-        )
-        .await
 }
 
 #[tauri::command]
@@ -1038,64 +728,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn page_text_keeps_short_juejin_pin_content() {
-        let html = r#"
-            <html lang="zh">
-              <head>
-                <title>做开发时觉得创业开店很容易 - 酸奶瓶 - 沸点 - 掘金</title>
-                <meta name="description" content="酸奶瓶：做开发时觉得创业开店很容易，其实做起来很难，光选址就能难倒一堆人，要考虑选品、客流、租金、建店成本等问题，感觉还不如坐班写代码轻松点[听歌]">
-                <script type="application/ld+json">
-                  {
-                    "@type": "BlogPosting",
-                    "image": ["https://p9-juejin-sign.byteimg.com/example.awebp"]
-                  }
-                </script>
-              </head>
-              <body>
-                <main>
-                  <span class="content content-d-bot">做开发时觉得创业开店很容易，其实做起来很难，光选址就能难倒一堆人，要考虑选品、客流、租金、建店成本等问题，感觉还不如坐班写代码轻松点</span>
-                </main>
-              </body>
-            </html>
-        "#;
-        let url = Url::parse("https://juejin.cn/pin/7637174891143036969").unwrap();
+    fn parse_ai_note_extracts_json_from_wrapped_reply() {
+        let reply = r###"
+            下面是整理好的 JSON：
+            ```json
+            {"title":"测试标题","summary":"## 一句话概览\n正文内容"}
+            ```
+        "###;
 
-        let (_title, text) = page_text(html, &url).expect("pin text should be readable");
+        let draft = parse_ai_note(reply, "备用标题");
 
-        assert!(text.contains("光选址就能难倒一堆人"));
-        assert!(text.contains("图片信息"));
-        assert!(text.contains("https://p9-juejin-sign.byteimg.com/example.awebp"));
+        assert_eq!(draft.title, "测试标题");
+        assert_eq!(draft.content, "## 一句话概览\n正文内容");
     }
 
     #[test]
-    fn page_text_keeps_mdbook_content_when_root_has_sidebar_class() {
-        let html = r##"
-            <!DOCTYPE html>
-            <html lang="en" class="light sidebar-visible" dir="ltr">
-              <head>
-                <title>Installation - The Rust Programming Language</title>
-              </head>
-              <body>
-                <nav id="mdbook-sidebar" class="sidebar">
-                  <a href="ch01-00-getting-started.html">Getting Started</a>
-                </nav>
-                <div id="mdbook-content" class="content">
-                  <main>
-                    <h1 id="installation"><a class="header" href="#installation">Installation</a></h1>
-                    <p>The first step is to install Rust. We’ll download Rust through rustup, a command line tool for managing Rust versions and associated tools.</p>
-                    <h3 id="command-line-notation"><a class="header" href="#command-line-notation">Command Line Notation</a></h3>
-                    <p>In this chapter and throughout the book, we’ll show some commands used in the terminal.</p>
-                  </main>
-                </div>
-              </body>
-            </html>
-        "##;
-        let url = Url::parse("https://doc.rust-lang.org/book/ch01-01-installation.html").unwrap();
+    fn parse_terms_extracts_json_from_plain_wrapped_reply() {
+        let reply = r#"
+            结果如下：
+            {"terms":[{"term":"Tauri","explanation":"桌面应用框架","context":"本文用于构建本地应用"}]}
+        "#;
 
-        let (_title, text) = page_text(html, &url).expect("mdbook text should be readable");
+        let terms = parse_terms(reply);
 
-        assert!(text.contains("The first step is to install Rust"));
-        assert!(text.contains("Command Line Notation"));
-        assert!(!text.contains("Getting Started"));
+        assert_eq!(terms.len(), 1);
+        assert_eq!(terms[0].term, "Tauri");
     }
 }

@@ -17,6 +17,7 @@ import EditorContent from "./components/EditorContent";
 import TocPanel from "./components/TocPanel";
 import WebSummaryDialog from "./components/WebSummaryDialog";
 import TermExplainDialog from "./components/TermExplainDialog";
+import SettingsPage from "./components/SettingsPage";
 import type { KnowledgeGraph } from "./components/KnowledgeGraphView";
 import {
   htmlToPlainText,
@@ -47,6 +48,88 @@ type StreamEvent =
   | { type: "Delta"; payload: string }
   | { type: "Done" }
   | { type: "Error"; payload: string };
+
+interface TermAiSections {
+  supplement: string;
+  scenarios: string;
+}
+
+const TERM_SUPPLEMENT_TITLE = "结合文章的补充说明";
+const TERM_SCENARIOS_TITLE = "适用场景和示例";
+
+function appendMarkdownSection(current: string, next: string): string {
+  if (!next) return current;
+  return current ? `${current}\n\n${next}` : next;
+}
+
+function splitTermAiSections(markdown: string): TermAiSections {
+  const trimmed = markdown.trim();
+  if (!trimmed) {
+    return { supplement: "", scenarios: "" };
+  }
+
+  const headingPattern = new RegExp(
+    `^#{1,6}\\s*(${TERM_SUPPLEMENT_TITLE}|${TERM_SCENARIOS_TITLE})\\s*$`,
+    "gm",
+  );
+  const matches = Array.from(trimmed.matchAll(headingPattern));
+  if (!matches.length) {
+    return { supplement: trimmed, scenarios: "" };
+  }
+
+  const sections: TermAiSections = { supplement: "", scenarios: "" };
+  const preface = trimmed.slice(0, matches[0].index).trim();
+  sections.supplement = appendMarkdownSection(sections.supplement, preface);
+
+  matches.forEach((match, index) => {
+    const title = match[1];
+    const contentStart = (match.index ?? 0) + match[0].length;
+    const contentEnd =
+      index + 1 < matches.length
+        ? matches[index + 1].index ?? trimmed.length
+        : trimmed.length;
+    const content = trimmed.slice(contentStart, contentEnd).trim();
+
+    if (title === TERM_SUPPLEMENT_TITLE) {
+      sections.supplement = appendMarkdownSection(sections.supplement, content);
+      return;
+    }
+
+    sections.scenarios = appendMarkdownSection(sections.scenarios, content);
+  });
+
+  return sections;
+}
+
+function formatReadingNoteTime(date: Date): string {
+  return date.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function safeMarkdownUrl(url: string): string {
+  return url.replace(/\s/g, "%20").replace(/\)/g, "%29");
+}
+
+function buildWebReadingNoteContent(
+  summaryContent: string,
+  sourceUrl: string,
+): string {
+  const content = summaryContent.trim() || "## 一句话概览\n\n暂无总结内容";
+  const sourceInfo = [
+    "## 原文信息",
+    `- 来源链接：[打开原文](${safeMarkdownUrl(sourceUrl)})`,
+    `- 导入时间：${formatReadingNoteTime(new Date())}`,
+    "- 生成方式：AI 网页阅读笔记",
+  ].join("\n");
+
+  return `${content}\n\n---\n\n${sourceInfo}`;
+}
 
 function escapeHtmlValue(value: string): string {
   return value
@@ -156,6 +239,8 @@ function App() {
   const [selectedNoteId, setSelectedNoteId] = useState("");
   const [is_pinned, setIsPinned] = useState(false);
   const [webSummaryOpen, setWebSummaryOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsClosing, setSettingsClosing] = useState(false);
   const [webSummaryLoading, setWebSummaryLoading] = useState(false);
   const [webSummaryError, setWebSummaryError] = useState("");
   const [aiTermsLoading, setAiTermsLoading] = useState(false);
@@ -170,6 +255,7 @@ function App() {
   const [termArticleLoading, setTermArticleLoading] = useState(false);
   const [termArticleError, setTermArticleError] = useState("");
   const termExplainRequestId = useRef(0);
+  const settingsCloseTimer = useRef<number | null>(null);
   const { customList, selectedId } = useStore(sidebarStore, (state) => state);
   const previousSelectedGroupId = useRef(selectedId);
   const notesState = useStore(notesStore, (state) => state);
@@ -179,6 +265,27 @@ function App() {
     [notesState, selectedNoteId],
   );
   const toc = useMemo(() => buildToc(noteDetail), [noteDetail]);
+  const termAiSections = useMemo(
+    () => splitTermAiSections(termAiExplanation),
+    [termAiExplanation],
+  );
+  const termPanelTerms = useMemo(
+    () =>
+      noteTerms.map((term) => {
+        const articleNote = notesState.list.find(
+          (note) =>
+            note.source_note_id === noteDetail.note_id &&
+            note.source_term === term.term,
+        );
+        return {
+          ...term,
+          status: articleNote ? ("article" as const) : ("idle" as const),
+          articleNoteId: articleNote?.id,
+          isActive: selectedTerm?.term === term.term,
+        };
+      }),
+    [noteDetail.note_id, noteTerms, notesState.list, selectedTerm?.term],
+  );
   const sourceNoteId = noteDetail.source_note_id
     ? `db-${noteDetail.source_note_id}`
     : "";
@@ -186,7 +293,35 @@ function App() {
     ? notesState.details[sourceNoteId]?.title ?? ""
     : "";
 
+  const openSettings = () => {
+    if (settingsCloseTimer.current !== null) {
+      window.clearTimeout(settingsCloseTimer.current);
+      settingsCloseTimer.current = null;
+    }
+    setSettingsClosing(false);
+    setSettingsOpen(true);
+  };
+
+  const closeSettings = () => {
+    if (!settingsOpen || settingsClosing) return;
+    setSettingsClosing(true);
+    settingsCloseTimer.current = window.setTimeout(() => {
+      setSettingsOpen(false);
+      setSettingsClosing(false);
+      settingsCloseTimer.current = null;
+    }, 220);
+  };
+
+  const toggleSettings = () => {
+    if (settingsOpen && !settingsClosing) {
+      closeSettings();
+      return;
+    }
+    openSettings();
+  };
+
   const handleSelectNote = (id: string) => {
+    closeSettings();
     setSelectedNoteId(id);
     const detail = notesStore.actions.getNoteDetail(id);
     setIsPinned(detail.is_pinned);
@@ -198,6 +333,7 @@ function App() {
   };
 
   const handleCreateNote = async () => {
+    closeSettings();
     const selectedCategory = customList.find((cat) => cat.id === selectedId);
     const detail = await notesStore.actions.addNote({
       group_id: selectedCategory ? Number(selectedCategory.id) : null,
@@ -221,8 +357,8 @@ function App() {
       const selectedCategory = customList.find((cat) => cat.id === selectedId);
       const detail = await notesStore.actions.addNote({
         group_id: selectedCategory ? Number(selectedCategory.id) : null,
-        title: summary.title || "AI 网页总结",
-        content: `${summary.content}\n\n---\n来源：[${targetUrl}](${targetUrl})`,
+        title: summary.title || "AI 网页阅读笔记",
+        content: buildWebReadingNoteContent(summary.content, targetUrl),
       });
 
       await notesStore.actions.loadNotes();
@@ -369,12 +505,14 @@ function App() {
         [selectedTerm.explanation.trim(), selectedTerm.context.trim()]
           .filter(Boolean)
           .join("\n\n") || "暂无原始解释";
-      const supplementContent = termAiExplanation.trim();
       const contentMarkdown = [
         `# ${selectedTerm.term}`,
         `## 原始解释\n\n${originalContent}`,
-        supplementContent
-          ? `## 结合文章的补充说明\n\n${supplementContent}`
+        termAiSections.supplement
+          ? `## 结合文章的补充说明\n\n${termAiSections.supplement}`
+          : "",
+        termAiSections.scenarios
+          ? `## 适用场景和示例\n\n${termAiSections.scenarios}`
           : "",
       ]
         .filter(Boolean)
@@ -537,6 +675,14 @@ function App() {
   }, []);
 
   useEffect(() => {
+    return () => {
+      if (settingsCloseTimer.current !== null) {
+        window.clearTimeout(settingsCloseTimer.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     const selectedGroupChanged = selectedId !== previousSelectedGroupId.current;
     previousSelectedGroupId.current = selectedId;
     if (!selectedGroupChanged && selectedNoteId) return;
@@ -583,82 +729,103 @@ function App() {
 
   return (
     <div className="app">
-      <Sidebar />
-
-      <NoteListPanel
-        selectedNoteId={selectedNoteId}
-        onCreateNote={handleCreateNote}
-        onDeleteNote={handleDeleteNote}
-        onSelectNote={handleSelectNote}
+      <Sidebar
+        settingsActive={settingsOpen}
+        onOpenSettings={toggleSettings}
+        onNavigate={closeSettings}
       />
 
-      <div className="editor-shell">
-        <EditorToolbar
-          group_id={noteDetail.group_id}
-          is_pinned={is_pinned}
-          categories={customList}
-          aiTermsLoading={aiTermsLoading}
-          hasSelectedNote={Boolean(selectedNoteId)}
-          onChangeGroup={handleChangeGroup}
-          onToggleImportant={handleToggleImportant}
-          onCreateNote={handleCreateNote}
-          onOpenWebSummary={() => {
-            setWebSummaryError("");
-            setWebSummaryOpen(true);
-          }}
-          onExplainTerms={handleExplainTerms}
-        />
-        {selectedNoteId ? (
-          <div className="editor-workspace">
-            <EditorContent
-              key={noteDetail.id}
-              noteDetail={noteDetail}
-              sourceNoteTitle={sourceNoteTitle}
-              onChangeTitle={handleChangeTitle}
-              onChangeNote={handleChangeNote}
-              onOpenSourceNote={
-                sourceNoteTitle ? handleOpenSourceNote : undefined
-              }
+      {settingsOpen ? (
+        <div
+          className={`settings-shell ${
+            settingsClosing ? "settings-shell-closing" : ""
+          }`}
+        >
+          <SettingsPage onClose={closeSettings} />
+        </div>
+      ) : (
+        <>
+          <NoteListPanel
+            selectedNoteId={selectedNoteId}
+            onCreateNote={handleCreateNote}
+            onDeleteNote={handleDeleteNote}
+            onSelectNote={handleSelectNote}
+          />
+
+          <div className="editor-shell">
+            <EditorToolbar
+              group_id={noteDetail.group_id}
+              is_pinned={is_pinned}
+              categories={customList}
+              aiTermsLoading={aiTermsLoading}
+              hasSelectedNote={Boolean(selectedNoteId)}
+              onChangeGroup={handleChangeGroup}
+              onToggleImportant={handleToggleImportant}
+              onCreateNote={handleCreateNote}
+              onOpenWebSummary={() => {
+                setWebSummaryError("");
+                setWebSummaryOpen(true);
+              }}
+              onExplainTerms={handleExplainTerms}
             />
-            <TocPanel
-              toc={toc}
-              terms={noteTerms}
-              onSelectTerm={handleSelectTerm}
-            />
+            {selectedNoteId ? (
+              <div className="editor-workspace">
+                <EditorContent
+                  key={noteDetail.id}
+                  noteDetail={noteDetail}
+                  sourceNoteTitle={sourceNoteTitle}
+                  onChangeTitle={handleChangeTitle}
+                  onChangeNote={handleChangeNote}
+                  onOpenSourceNote={
+                    sourceNoteTitle ? handleOpenSourceNote : undefined
+                  }
+                />
+                <TocPanel
+                  toc={toc}
+                  terms={termPanelTerms}
+                  aiTermsLoading={aiTermsLoading}
+                  onSelectTerm={handleSelectTerm}
+                  onOpenArticle={handleSelectNote}
+                  onRegenerateTerms={handleExplainTerms}
+                />
+              </div>
+            ) : (
+              <main className="editor-empty-panel">
+                <div className="editor-empty-content" role="status">
+                  <div className="editor-empty-illustration" aria-hidden="true">
+                    <span />
+                  </div>
+                  <h2>选择或新建一条笔记</h2>
+                  <p>
+                    当前没有可编辑内容。新建笔记后，标题、正文和目录会在这里展开。
+                  </p>
+                  <div className="editor-empty-actions">
+                    <button
+                      type="button"
+                      className="toolbar-btn toolbar-btn-primary"
+                      onClick={() => {
+                        void handleCreateNote();
+                      }}
+                    >
+                      新建笔记
+                    </button>
+                    <button
+                      type="button"
+                      className="toolbar-btn"
+                      onClick={() => {
+                        setWebSummaryError("");
+                        setWebSummaryOpen(true);
+                      }}
+                    >
+                      AI 总结网页
+                    </button>
+                  </div>
+                </div>
+              </main>
+            )}
           </div>
-        ) : (
-          <main className="editor-empty-panel">
-            <div className="editor-empty-content" role="status">
-              <div className="editor-empty-illustration" aria-hidden="true">
-                <span />
-              </div>
-              <h2>选择或新建一条笔记</h2>
-              <p>当前没有可编辑内容。新建笔记后，标题、正文和目录会在这里展开。</p>
-              <div className="editor-empty-actions">
-                <button
-                  type="button"
-                  className="toolbar-btn toolbar-btn-primary"
-                  onClick={() => {
-                    void handleCreateNote();
-                  }}
-                >
-                  新建笔记
-                </button>
-                <button
-                  type="button"
-                  className="toolbar-btn"
-                  onClick={() => {
-                    setWebSummaryError("");
-                    setWebSummaryOpen(true);
-                  }}
-                >
-                  AI 总结网页
-                </button>
-              </div>
-            </div>
-          </main>
-        )}
-      </div>
+        </>
+      )}
       <WebSummaryDialog
         open={webSummaryOpen}
         loading={webSummaryLoading}
@@ -675,7 +842,8 @@ function App() {
         term={selectedTerm?.term ?? ""}
         fallbackExplanation={selectedTerm?.explanation ?? ""}
         fallbackContext={selectedTerm?.context ?? ""}
-        aiExplanation={termAiExplanation}
+        supplement={termAiSections.supplement}
+        scenarios={termAiSections.scenarios}
         loading={termExplainLoading}
         error={termExplainError}
         graph={termGraph}

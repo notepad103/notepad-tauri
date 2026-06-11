@@ -15,7 +15,7 @@ interface SearchMeta {
   query: string;
 }
 
-export const searchPluginKey = new PluginKey<SearchState>("searchHighlight");
+const searchPluginKey = new PluginKey<SearchState>("searchHighlight");
 
 function normalizeIndex(index: number, count: number): number {
   if (!count) return 0;

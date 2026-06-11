@@ -6,7 +6,8 @@ interface TermExplainDialogProps {
   term: string;
   fallbackExplanation: string;
   fallbackContext: string;
-  aiExplanation: string;
+  supplement: string;
+  scenarios: string;
   loading: boolean;
   error: string;
   graph: KnowledgeGraph | null;
@@ -24,7 +25,8 @@ export default function TermExplainDialog({
   term,
   fallbackExplanation,
   fallbackContext,
-  aiExplanation,
+  supplement,
+  scenarios,
   loading,
   error,
   graph,
@@ -42,9 +44,8 @@ export default function TermExplainDialog({
     [fallbackExplanation, fallbackContext].filter(Boolean).join("\n\n") ||
       "暂无原始解释",
   );
-  const renderedSupplement = aiExplanation
-    ? markdownToHtml(aiExplanation)
-    : "";
+  const renderedSupplement = supplement ? markdownToHtml(supplement) : "";
+  const renderedScenarios = scenarios ? markdownToHtml(scenarios) : "";
 
   return (
     <div className="modal-backdrop" role="presentation">
@@ -81,6 +82,14 @@ export default function TermExplainDialog({
               <div dangerouslySetInnerHTML={{ __html: renderedSupplement }} />
             ) : (
               <p className="term-dialog-muted">等待 AI 补充说明</p>
+            )}
+          </section>
+          <section className="term-dialog-section">
+            <h3>适用场景和示例</h3>
+            {renderedScenarios ? (
+              <div dangerouslySetInnerHTML={{ __html: renderedScenarios }} />
+            ) : (
+              <p className="term-dialog-muted">等待 AI 生成场景示例</p>
             )}
           </section>
           <section className="term-dialog-section">

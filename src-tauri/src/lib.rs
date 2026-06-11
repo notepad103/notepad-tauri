@@ -1,20 +1,10 @@
 mod ai;
 #[path = "../base/mod.rs"]
 mod base;
+mod webpage;
 
 use std::fs;
 use tauri::Manager;
-
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
-#[tauri::command]
-fn greet_two(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -29,13 +19,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            greet,
-            greet_two,
             ai::summarize_webpage,
             ai::explain_article_terms,
-            ai::explain_article_term,
             ai::explain_article_term_stream,
             ai::generate_term_knowledge_graph,
+            ai::get_ai_settings,
+            ai::save_deepseek_api_key,
+            ai::save_deepseek_model,
             base::sql::add_groups,
             base::sql::get_db_path,
             base::sql::get_groups,
