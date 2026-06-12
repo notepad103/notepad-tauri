@@ -3,14 +3,22 @@ import { useStore } from "@tanstack/react-store";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { sidebarStore } from "../store/sidebar";
 import { notesStore } from "../store/notes";
-import type { NavFilter } from "../mock/notes";
+import type { NavFilter, NoteType } from "../mock/notes";
 
 interface NoteListPanelProps {
   selectedNoteId: string;
   onCreateNote: () => void | Promise<void>;
   onDeleteNote: (id: string) => void | Promise<void>;
-  onSelectNote: (id: string) => void;
+  onSelectNote: (id: string) => void | Promise<void>;
 }
+
+const NOTE_TYPE_ICON: Record<NoteType, { label: string; title: string }> = {
+  normal: { label: "N", title: "普通笔记" },
+  pdf_note: { label: "P", title: "PDF 关联笔记" },
+  pdf_summary: { label: "S", title: "PDF 总结笔记" },
+  web_summary: { label: "W", title: "网页总结笔记" },
+  term_article: { label: "T", title: "名词扩展文章" },
+};
 
 export default function NoteListPanel({
   selectedNoteId,
@@ -200,6 +208,13 @@ export default function NoteListPanel({
               >
                 <div className="note-card-top">
                   <div className="note-card-title-wrap">
+                    <span
+                      className={`note-type-icon note-type-icon-${note.note_type}`}
+                      title={NOTE_TYPE_ICON[note.note_type].title}
+                      aria-label={NOTE_TYPE_ICON[note.note_type].title}
+                    >
+                      {NOTE_TYPE_ICON[note.note_type].label}
+                    </span>
                     <h3 className="note-card-title">{note.title}</h3>
                     {note.is_pinned && (
                       <span className="note-important-badge">重要</span>

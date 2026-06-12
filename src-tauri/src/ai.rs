@@ -22,8 +22,8 @@ pub struct WebpageSummary {
 
 #[derive(Serialize)]
 pub struct AiNoteDraft {
-    title: String,
-    content: String,
+    pub title: String,
+    pub content: String,
 }
 
 #[derive(Serialize)]
@@ -87,6 +87,14 @@ struct ChatRequest {
     messages: Vec<AiMessage>,
     temperature: f32,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingConfig>,
+}
+
+#[derive(Serialize)]
+struct ThinkingConfig {
+    #[serde(rename = "type")]
+    kind: &'static str,
 }
 
 #[derive(Deserialize)]
@@ -125,7 +133,7 @@ struct SummaryJson {
     summary: String,
 }
 
-struct AiClient {
+pub(crate) struct AiClient {
     http: reqwest::Client,
     api_key: String,
 }
@@ -143,14 +151,14 @@ struct RewooPrompt<'a> {
 }
 
 impl AiMessage {
-    fn system(content: impl Into<String>) -> Self {
+    pub(crate) fn system(content: impl Into<String>) -> Self {
         Self {
             role: "system",
             content: content.into(),
         }
     }
 
-    fn user(content: impl Into<String>) -> Self {
+    pub(crate) fn user(content: impl Into<String>) -> Self {
         Self {
             role: "user",
             content: content.into(),
@@ -159,23 +167,50 @@ impl AiMessage {
 }
 
 impl AiClient {
-    fn new() -> Result<Self, String> {
+    pub(crate) fn new() -> Result<Self, String> {
         Ok(Self {
             http: build_http_client("notepad-tauri/0.1 ai client")?,
             api_key: deepseek_api_key()?,
         })
     }
 
-    async fn chat_text(
+    pub(crate) async fn chat_text(
         &self,
         messages: Vec<AiMessage>,
         temperature: f32,
     ) -> Result<String, String> {
+        self.chat_text_with_options(deepseek_model(), messages, temperature, None)
+            .await
+    }
+
+    pub(crate) async fn chat_text_with_model_without_reasoning(
+        &self,
+        model: impl Into<String>,
+        messages: Vec<AiMessage>,
+        temperature: f32,
+    ) -> Result<String, String> {
+        self.chat_text_with_options(
+            model.into(),
+            messages,
+            temperature,
+            Some(ThinkingConfig { kind: "disabled" }),
+        )
+        .await
+    }
+
+    async fn chat_text_with_options(
+        &self,
+        model: String,
+        messages: Vec<AiMessage>,
+        temperature: f32,
+        thinking: Option<ThinkingConfig>,
+    ) -> Result<String, String> {
         let request = ChatRequest {
-            model: deepseek_model(),
+            model,
             messages,
             temperature,
             stream: false,
+            thinking,
         };
 
         let response = self
@@ -211,6 +246,7 @@ impl AiClient {
             messages,
             temperature,
             stream: true,
+            thinking: None,
         };
 
         let response = self
@@ -511,7 +547,7 @@ fn parse_ai_json<T: DeserializeOwned>(content: &str) -> Option<T> {
         .or_else(|| extract_json_object(content).and_then(|json| serde_json::from_str(json).ok()))
 }
 
-fn parse_ai_note(content: &str, raw_markdown_title: &str) -> AiNoteDraft {
+pub(crate) fn parse_ai_note(content: &str, raw_markdown_title: &str) -> AiNoteDraft {
     let trimmed = content.trim();
 
     if let Some(parsed) = parse_ai_json::<SummaryJson>(trimmed) {

@@ -5,10 +5,13 @@ interface EditorToolbarProps {
   is_pinned: boolean;
   categories: Category[];
   aiTermsLoading: boolean;
+  pdfLoading: boolean;
+  pdfActive: boolean;
   hasSelectedNote: boolean;
   onChangeGroup: (group_id: number | null) => void | Promise<void>;
   onToggleImportant: () => void;
   onCreateNote: () => void | Promise<void>;
+  onOpenPdf: () => void | Promise<void>;
   onOpenWebSummary: () => void;
   onExplainTerms: () => void | Promise<void>;
 }
@@ -18,10 +21,13 @@ export default function EditorToolbar({
   is_pinned,
   categories,
   aiTermsLoading,
+  pdfLoading,
+  pdfActive,
   hasSelectedNote,
   onChangeGroup,
   onToggleImportant,
   onCreateNote,
+  onOpenPdf,
   onOpenWebSummary,
   onExplainTerms,
 }: EditorToolbarProps) {
@@ -52,18 +58,33 @@ export default function EditorToolbar({
           >
             {is_pinned ? "取消标记" : "标记为重要"}
           </button>
-          <button
-            type="button"
-            className="toolbar-btn"
-            disabled={aiTermsLoading}
-            onClick={() => {
-              void onExplainTerms();
-            }}
-          >
-            {aiTermsLoading ? "分析中..." : "AI 名词解释"}
-          </button>
+          {!pdfActive && (
+            <>
+              <button
+                type="button"
+                className="toolbar-btn"
+                disabled={aiTermsLoading}
+                onClick={() => {
+                  void onExplainTerms();
+                }}
+              >
+                {aiTermsLoading ? "分析中..." : "AI 名词解释"}
+              </button>
+              <span className="toolbar-divider" aria-hidden="true" />
+            </>
+          )}
         </>
       )}
+      <button
+        type="button"
+        className={`toolbar-btn ${pdfActive ? "toolbar-btn-active" : ""}`}
+        disabled={pdfLoading}
+        onClick={() => {
+          void onOpenPdf();
+        }}
+      >
+        {pdfLoading ? "打开中..." : "打开 PDF"}
+      </button>
       <button
         type="button"
         className="toolbar-btn"

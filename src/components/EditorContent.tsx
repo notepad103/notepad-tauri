@@ -22,9 +22,11 @@ import { isHtmlContent, markdownToHtml, slug } from "../utils/markdown";
 interface EditorContentProps {
   noteDetail: NoteDetail;
   sourceNoteTitle?: string;
+  sourcePdfName?: string;
   onChangeTitle: (title: string) => void;
   onChangeNote: (title: string, content: string) => void | Promise<void>;
   onOpenSourceNote?: () => void;
+  onOpenSourcePdf?: () => void;
 }
 
 function sectionsToMarkdown(noteDetail: NoteDetail): string {
@@ -64,9 +66,11 @@ function scheduleHeadingIds(container: HTMLElement | null) {
 export default function EditorContent({
   noteDetail,
   sourceNoteTitle,
+  sourcePdfName,
   onChangeTitle,
   onChangeNote,
   onOpenSourceNote,
+  onOpenSourcePdf,
 }: EditorContentProps) {
   const [title, setTitle] = useState(noteDetail.title);
   const [content, setContent] = useState(
@@ -262,6 +266,19 @@ export default function EditorContent({
                 onClick={onOpenSourceNote}
               >
                 {sourceNoteTitle}
+              </button>
+            </div>
+          )}
+          {sourcePdfName && onOpenSourcePdf && (
+            <div className="source-note-row">
+              <span className="source-note-label">来源 PDF</span>
+              <button
+                type="button"
+                className="source-note-button"
+                title={`跳转到「${sourcePdfName}」`}
+                onClick={onOpenSourcePdf}
+              >
+                {sourcePdfName}
               </button>
             </div>
           )}

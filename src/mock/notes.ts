@@ -1,4 +1,10 @@
 export type NavFilter = "all" | "today" | "important";
+export type NoteType =
+  | "normal"
+  | "pdf_note"
+  | "pdf_summary"
+  | "web_summary"
+  | "term_article";
 
 export interface NavItem {
   id: NavFilter;
@@ -16,6 +22,8 @@ export interface NoteListItem {
   id: string;
   note_id?: number;
   group_id: number | null;
+  note_type: NoteType;
+  pdf_document_id?: number | null;
   source_note_id?: number | null;
   source_term?: string | null;
   title: string;
@@ -38,6 +46,8 @@ export interface NoteDetail {
   id: string;
   note_id?: number;
   group_id: number | null;
+  note_type: NoteType;
+  pdf_document_id?: number | null;
   source_note_id?: number | null;
   source_term?: string | null;
   title: string;
@@ -58,6 +68,8 @@ export function createEmptyNoteDetail(id = ""): NoteDetail {
   return {
     id,
     group_id: null,
+    note_type: "normal",
+    pdf_document_id: null,
     source_note_id: null,
     source_term: null,
     title: "未命名笔记",

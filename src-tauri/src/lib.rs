@@ -1,6 +1,7 @@
 mod ai;
 #[path = "../base/mod.rs"]
 mod base;
+mod pdf_summary;
 mod webpage;
 
 use std::fs;
@@ -38,7 +39,18 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             base::sql::update_note_pinned,
             base::sql::delete_notes,
             base::sql::get_note_terms,
-            base::sql::save_note_terms
+            base::sql::save_note_terms,
+            base::sql::import_pdf_file,
+            base::sql::get_pdf_documents,
+            base::sql::read_pdf_document_file,
+            base::sql::update_pdf_reading_position,
+            base::sql::get_pdf_chunks,
+            base::sql::save_pdf_chunks,
+            base::sql::delete_pdf_chunks,
+            base::sql::get_pdf_outline_items,
+            base::sql::save_pdf_outline_items,
+            base::sql::delete_pdf_outline_items,
+            pdf_summary::summarize_pdf_document
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

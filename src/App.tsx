@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "@tanstack/react-store";
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
 import {
   buildToc,
   navItems,
@@ -18,6 +18,10 @@ import TocPanel from "./components/TocPanel";
 import WebSummaryDialog from "./components/WebSummaryDialog";
 import TermExplainDialog from "./components/TermExplainDialog";
 import SettingsPage from "./components/SettingsPage";
+import PdfReader, {
+  type PdfDocument,
+  type PdfSummary,
+} from "./components/PdfReader";
 import type { KnowledgeGraph } from "./components/KnowledgeGraphView";
 import {
   htmlToPlainText,
@@ -53,6 +57,8 @@ interface TermAiSections {
   supplement: string;
   scenarios: string;
 }
+
+type StoredPdfDocument = PdfDocument;
 
 const TERM_SUPPLEMENT_TITLE = "结合文章的补充说明";
 const TERM_SCENARIOS_TITLE = "适用场景和示例";
@@ -254,8 +260,12 @@ function App() {
   const [termGraphError, setTermGraphError] = useState("");
   const [termArticleLoading, setTermArticleLoading] = useState(false);
   const [termArticleError, setTermArticleError] = useState("");
+  const [pdfDocument, setPdfDocument] = useState<PdfDocument | null>(null);
+  const [pdfDocuments, setPdfDocuments] = useState<PdfDocument[]>([]);
+  const [pdfLoading, setPdfLoading] = useState(false);
   const termExplainRequestId = useRef(0);
   const settingsCloseTimer = useRef<number | null>(null);
+  const pdfPositionSaveTimer = useRef<number | null>(null);
   const { customList, selectedId } = useStore(sidebarStore, (state) => state);
   const previousSelectedGroupId = useRef(selectedId);
   const notesState = useStore(notesStore, (state) => state);
@@ -292,6 +302,15 @@ function App() {
   const sourceNoteTitle = sourceNoteId
     ? notesState.details[sourceNoteId]?.title ?? ""
     : "";
+  const sourcePdf = noteDetail.pdf_document_id
+    ? pdfDocuments.find((document) => document.id === noteDetail.pdf_document_id)
+    : null;
+
+  const loadPdfDocuments = useCallback(async () => {
+    const documents = await invoke<StoredPdfDocument[]>("get_pdf_documents");
+    setPdfDocuments(documents);
+    return documents;
+  }, []);
 
   const openSettings = () => {
     if (settingsCloseTimer.current !== null) {
@@ -320,11 +339,32 @@ function App() {
     openSettings();
   };
 
-  const handleSelectNote = (id: string) => {
+  const openPdfDocument = (document: PdfDocument) => {
+    termExplainRequestId.current += 1;
+    setSelectedTerm(null);
+    setTermExplainLoading(false);
+    setPdfDocument(document);
+  };
+
+  const handleSelectNote = async (id: string) => {
     closeSettings();
     setSelectedNoteId(id);
     const detail = notesStore.actions.getNoteDetail(id);
     setIsPinned(detail.is_pinned);
+
+    if (detail.note_type === "pdf_note" && detail.pdf_document_id) {
+      const document =
+        pdfDocuments.find((item) => item.id === detail.pdf_document_id) ??
+        (await loadPdfDocuments()).find(
+          (item) => item.id === detail.pdf_document_id,
+        );
+      if (document) {
+        openPdfDocument(document);
+        return;
+      }
+    }
+
+    setPdfDocument(null);
   };
 
   const handleOpenSourceNote = () => {
@@ -334,9 +374,11 @@ function App() {
 
   const handleCreateNote = async () => {
     closeSettings();
+    setPdfDocument(null);
     const selectedCategory = customList.find((cat) => cat.id === selectedId);
     const detail = await notesStore.actions.addNote({
       group_id: selectedCategory ? Number(selectedCategory.id) : null,
+      note_type: "normal",
     });
     await notesStore.actions.loadNotes();
     await sidebarStore.actions.getList();
@@ -357,12 +399,14 @@ function App() {
       const selectedCategory = customList.find((cat) => cat.id === selectedId);
       const detail = await notesStore.actions.addNote({
         group_id: selectedCategory ? Number(selectedCategory.id) : null,
+        note_type: "web_summary",
         title: summary.title || "AI 网页阅读笔记",
         content: buildWebReadingNoteContent(summary.content, targetUrl),
       });
 
       await notesStore.actions.loadNotes();
       await sidebarStore.actions.getList();
+      setPdfDocument(null);
       setSelectedNoteId(detail.id);
       setIsPinned(detail.is_pinned);
       setWebSummaryOpen(false);
@@ -372,6 +416,165 @@ function App() {
       setWebSummaryLoading(false);
     }
   };
+
+  const ensurePdfLinkedNote = async (document: PdfDocument) => {
+    await notesStore.actions.loadNotes();
+    const existingNote = notesStore
+      .get()
+      .list.find(
+        (note) =>
+          note.note_type === "pdf_note" && note.pdf_document_id === document.id,
+      );
+    if (existingNote) return existingNote.id;
+
+    const selectedCategory = customList.find((cat) => cat.id === selectedId);
+    const content = markdownToHtml(
+      [
+        `# ${document.name} 阅读笔记`,
+        "",
+        `来源 PDF：${document.name}`,
+        `存储位置：${document.stored_path}`,
+        "",
+        "## 笔记",
+        "",
+      ].join("\n"),
+    );
+    const detail = await notesStore.actions.addNote({
+      group_id: selectedCategory ? Number(selectedCategory.id) : null,
+      note_type: "pdf_note",
+      title: `${document.name} 阅读笔记`,
+      content,
+      pdf_document_id: document.id,
+    });
+
+    await notesStore.actions.loadNotes();
+    await sidebarStore.actions.getList();
+    return detail.id;
+  };
+
+  const handleOpenPdf = async () => {
+    closeSettings();
+    const selected = await open({
+      multiple: false,
+      filters: [{ name: "PDF 文档", extensions: ["pdf"] }],
+    });
+    const path = Array.isArray(selected) ? selected[0] : selected;
+    if (!path) return;
+
+    setPdfLoading(true);
+    try {
+      const document = await invoke<StoredPdfDocument>("import_pdf_file", {
+        path,
+      });
+      termExplainRequestId.current += 1;
+      setSelectedTerm(null);
+      setTermExplainLoading(false);
+      const linkedNoteId = await ensurePdfLinkedNote(document);
+      const linkedDetail = notesStore.actions.getNoteDetail(linkedNoteId);
+      setSelectedNoteId(linkedNoteId);
+      setIsPinned(linkedDetail.is_pinned);
+      setPdfDocument(document);
+      await loadPdfDocuments();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPdfLoading(false);
+    }
+  };
+
+  const handleOpenSavedPdf = async (id: number) => {
+    const document =
+      pdfDocuments.find((item) => item.id === id) ??
+      (await loadPdfDocuments()).find((item) => item.id === id);
+    if (!document) return;
+    closeSettings();
+    const linkedNoteId = await ensurePdfLinkedNote(document);
+    const linkedDetail = notesStore.actions.getNoteDetail(linkedNoteId);
+    setSelectedNoteId(linkedNoteId);
+    setIsPinned(linkedDetail.is_pinned);
+    openPdfDocument(document);
+  };
+
+  const handleOpenSourcePdf = () => {
+    if (!sourcePdf) return;
+    handleOpenSavedPdf(sourcePdf.id);
+  };
+
+  const handlePdfReadingChange = useCallback(
+    (page: number, pageCount: number) => {
+      const currentId = pdfDocument?.id;
+      if (!currentId) return;
+
+      setPdfDocument((current) =>
+        current?.id === currentId
+          ? {
+              ...current,
+              last_page: page,
+              page_count: pageCount,
+            }
+          : current,
+      );
+      setPdfDocuments((current) =>
+        current.map((document) =>
+          document.id === currentId
+            ? {
+                ...document,
+                last_page: page,
+                page_count: pageCount,
+              }
+            : document,
+        ),
+      );
+
+      if (pdfPositionSaveTimer.current !== null) {
+        window.clearTimeout(pdfPositionSaveTimer.current);
+      }
+      pdfPositionSaveTimer.current = window.setTimeout(() => {
+        pdfPositionSaveTimer.current = null;
+        invoke<StoredPdfDocument>("update_pdf_reading_position", {
+          id: currentId,
+          lastPage: page,
+          pageCount,
+        })
+          .then((document) => {
+            setPdfDocument((current) =>
+              current?.id === document.id ? document : current,
+            );
+            setPdfDocuments((current) =>
+              current.map((item) =>
+                item.id === document.id ? document : item,
+              ),
+            );
+          })
+          .catch((err) => {
+            console.error(err);
+          });
+      }, 500);
+    },
+    [pdfDocument?.id],
+  );
+
+  const handleCreatePdfSummary = useCallback(
+    async (summary: PdfSummary) => {
+      if (!pdfDocument) return;
+
+      const selectedCategory = customList.find((cat) => cat.id === selectedId);
+      const detail = await notesStore.actions.addNote({
+        group_id: selectedCategory ? Number(selectedCategory.id) : null,
+        note_type: "pdf_summary",
+        title: summary.title || `${pdfDocument.name} AI 总结`,
+        content: summary.content,
+        pdf_document_id: pdfDocument.id,
+      });
+
+      await notesStore.actions.loadNotes();
+      await sidebarStore.actions.getList();
+      setPdfDocument(null);
+      setSelectedNoteId(detail.id);
+      setIsPinned(detail.is_pinned);
+    },
+    [customList, pdfDocument, selectedId],
+  );
 
   const handleExplainTerms = async () => {
     if (!selectedNoteId || !noteDetail.note_id || aiTermsLoading) return;
@@ -526,6 +729,7 @@ function App() {
       const content = `${markdownToHtml(contentMarkdown)}${graphHtml}<hr>${sourceHtml}`;
       const detail = await notesStore.actions.addNote({
         group_id: noteDetail.group_id,
+        note_type: "term_article",
         title: `${selectedTerm.term}：扩展文章`,
         content,
         source_note_id: noteDetail.note_id,
@@ -535,6 +739,7 @@ function App() {
       await notesStore.actions.loadNotes();
       await sidebarStore.actions.getList();
       termExplainRequestId.current += 1;
+      setPdfDocument(null);
       setSelectedNoteId(detail.id);
       setIsPinned(detail.is_pinned);
       setSelectedTerm(null);
@@ -672,12 +877,18 @@ function App() {
     notesStore.actions.loadNotes().catch((err) => {
       console.error(err);
     });
-  }, []);
+    loadPdfDocuments().catch((err) => {
+      console.error(err);
+    });
+  }, [loadPdfDocuments]);
 
   useEffect(() => {
     return () => {
       if (settingsCloseTimer.current !== null) {
         window.clearTimeout(settingsCloseTimer.current);
+      }
+      if (pdfPositionSaveTimer.current !== null) {
+        window.clearTimeout(pdfPositionSaveTimer.current);
       }
     };
   }, []);
@@ -732,7 +943,10 @@ function App() {
       <Sidebar
         settingsActive={settingsOpen}
         onOpenSettings={toggleSettings}
-        onNavigate={closeSettings}
+        onNavigate={() => {
+          closeSettings();
+          setPdfDocument(null);
+        }}
       />
 
       <NoteListPanel
@@ -748,27 +962,38 @@ function App() {
           is_pinned={is_pinned}
           categories={customList}
           aiTermsLoading={aiTermsLoading}
+          pdfLoading={pdfLoading}
+          pdfActive={Boolean(pdfDocument)}
           hasSelectedNote={Boolean(selectedNoteId)}
           onChangeGroup={handleChangeGroup}
           onToggleImportant={handleToggleImportant}
           onCreateNote={handleCreateNote}
+          onOpenPdf={handleOpenPdf}
           onOpenWebSummary={() => {
             setWebSummaryError("");
             setWebSummaryOpen(true);
           }}
           onExplainTerms={handleExplainTerms}
         />
-        {selectedNoteId ? (
+        {pdfDocument ? (
+          <PdfReader
+            document={pdfDocument}
+            onReadingChange={handlePdfReadingChange}
+            onSummaryCreated={handleCreatePdfSummary}
+          />
+        ) : selectedNoteId ? (
           <div className="editor-workspace">
             <EditorContent
               key={noteDetail.id}
               noteDetail={noteDetail}
               sourceNoteTitle={sourceNoteTitle}
+              sourcePdfName={sourcePdf?.name}
               onChangeTitle={handleChangeTitle}
               onChangeNote={handleChangeNote}
               onOpenSourceNote={
                 sourceNoteTitle ? handleOpenSourceNote : undefined
               }
+              onOpenSourcePdf={sourcePdf ? handleOpenSourcePdf : undefined}
             />
             <TocPanel
               toc={toc}
@@ -808,6 +1033,16 @@ function App() {
                   }}
                 >
                   AI 总结网页
+                </button>
+                <button
+                  type="button"
+                  className="toolbar-btn"
+                  disabled={pdfLoading}
+                  onClick={() => {
+                    void handleOpenPdf();
+                  }}
+                >
+                  {pdfLoading ? "打开中..." : "打开 PDF"}
                 </button>
               </div>
             </div>
