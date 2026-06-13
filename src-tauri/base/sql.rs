@@ -920,7 +920,6 @@ pub fn update_group(id: i64, label: &str) -> Result<NoteGroup, String> {
 
 #[tauri::command]
 pub fn delete_group(id: i64) -> Result<(), String> {
-    println!("delete_group");
     let conn = DB.lock().unwrap();
     conn.execute("DELETE FROM note_groups WHERE id = ?1", [id])
         .map_err(|e| e.to_string())?;

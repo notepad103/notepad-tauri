@@ -89,15 +89,6 @@ fn truncate_chars(text: &str, limit: usize) -> String {
     }
 }
 
-fn log_ai_return_content(label: &str, content: &str) {
-    println!(
-        "[pdf_summary] {} returned content start\n{}\n[pdf_summary] {} returned content end",
-        label,
-        content.trim(),
-        label
-    );
-}
-
 fn send_progress(
     channel: &Channel<PdfSummaryProgress>,
     progress: f32,
@@ -292,11 +283,10 @@ fn build_batch_fallback_summary(batch: &SummaryBatch<'_>) -> String {
 async fn summarize_batch_with_compensation(
     client: &AiClient,
     request: BatchSummaryRequest,
-    total_batches: usize,
 ) -> BatchSummaryResult {
     let mut last_error = None;
 
-    for attempt in 1..=BATCH_SUMMARY_MAX_ATTEMPTS {
+    for _ in 1..=BATCH_SUMMARY_MAX_ATTEMPTS {
         match client
             .chat_text_with_model_without_reasoning(
                 BATCH_SUMMARY_MODEL,
@@ -309,20 +299,6 @@ async fn summarize_batch_with_compensation(
             .await
         {
             Ok(summary) => {
-                log_ai_return_content(
-                    &format!("batch {}/{}", request.index + 1, total_batches),
-                    &summary,
-                );
-                if attempt > 1 {
-                    println!(
-                        "[pdf_summary] batch {}/{} recovered: pages={}-{}, attempt={}",
-                        request.index + 1,
-                        total_batches,
-                        request.page_start,
-                        request.page_end,
-                        attempt
-                    );
-                }
                 return BatchSummaryResult {
                     index: request.index,
                     summary,
@@ -330,16 +306,6 @@ async fn summarize_batch_with_compensation(
                 };
             }
             Err(err) => {
-                println!(
-                    "[pdf_summary] batch {}/{} failed: pages={}-{}, attempt={}/{}, error={}",
-                    request.index + 1,
-                    total_batches,
-                    request.page_start,
-                    request.page_end,
-                    attempt,
-                    BATCH_SUMMARY_MAX_ATTEMPTS,
-                    err
-                );
                 last_error = Some(err);
             }
         }
@@ -462,11 +428,10 @@ fn build_aggregate_fallback_summary(group: &AggregateSummaryGroup) -> String {
 async fn aggregate_summary_group_with_compensation(
     client: &AiClient,
     request: AggregateSummaryRequest,
-    total_groups: usize,
 ) -> AggregateSummaryResult {
     let mut last_error = None;
 
-    for attempt in 1..=AGGREGATE_SUMMARY_MAX_ATTEMPTS {
+    for _ in 1..=AGGREGATE_SUMMARY_MAX_ATTEMPTS {
         match client
             .chat_text_with_model_without_reasoning(
                 BATCH_SUMMARY_MODEL,
@@ -479,20 +444,6 @@ async fn aggregate_summary_group_with_compensation(
             .await
         {
             Ok(summary) => {
-                log_ai_return_content(
-                    &format!("aggregate {}/{}", request.index + 1, total_groups),
-                    &summary,
-                );
-                if attempt > 1 {
-                    println!(
-                        "[pdf_summary] aggregate {}/{} recovered: batches={}-{}, attempt={}",
-                        request.index + 1,
-                        total_groups,
-                        request.batch_start,
-                        request.batch_end,
-                        attempt
-                    );
-                }
                 return AggregateSummaryResult {
                     index: request.index,
                     summary,
@@ -500,16 +451,6 @@ async fn aggregate_summary_group_with_compensation(
                 };
             }
             Err(err) => {
-                println!(
-                    "[pdf_summary] aggregate {}/{} failed: batches={}-{}, attempt={}/{}, error={}",
-                    request.index + 1,
-                    total_groups,
-                    request.batch_start,
-                    request.batch_end,
-                    attempt,
-                    AGGREGATE_SUMMARY_MAX_ATTEMPTS,
-                    err
-                );
                 last_error = Some(err);
             }
         }
@@ -549,14 +490,6 @@ async fn aggregate_summaries_if_needed(
         round += 1;
         let groups = build_aggregate_groups(&current_summaries);
         let total_groups = groups.len();
-        println!(
-            "[pdf_summary] aggregate layer start: document_id={}, round={}, groups={}, input_summaries={}, chars={}",
-            document.id,
-            round,
-            total_groups,
-            current_summaries.len(),
-            final_input_char_count(&current_summaries)
-        );
         send_progress(
             progress,
             BATCH_PROGRESS_END,
@@ -579,19 +512,11 @@ async fn aggregate_summaries_if_needed(
         let mut summary_slots = vec![None; total_groups];
         let mut completed_groups = 0usize;
         let mut aggregate_stream = stream::iter(requests.into_iter())
-            .map(|request| aggregate_summary_group_with_compensation(client, request, total_groups))
+            .map(|request| aggregate_summary_group_with_compensation(client, request))
             .buffer_unordered(AGGREGATE_SUMMARY_CONCURRENCY);
 
         while let Some(result) = aggregate_stream.next().await {
             completed_groups += 1;
-            println!(
-                "[pdf_summary] aggregate {}/{} received: document_id={}, round={}, summary_chars={}",
-                result.index + 1,
-                total_groups,
-                document.id,
-                round,
-                char_count(&result.summary)
-            );
             if let Some(error) = result.error {
                 failed_batch_errors.push(error);
             }
@@ -684,7 +609,7 @@ async fn merge_batch_summaries_with_compensation(
     let prompt = build_final_prompt(document, outline_items, batch_summaries);
     let mut last_error = None;
 
-    for attempt in 1..=FINAL_MERGE_MAX_ATTEMPTS {
+    for _ in 1..=FINAL_MERGE_MAX_ATTEMPTS {
         match client
             .chat_text(
                 vec![
@@ -695,21 +620,8 @@ async fn merge_batch_summaries_with_compensation(
             )
             .await
         {
-            Ok(content) => {
-                log_ai_return_content("final merge", &content);
-                if attempt > 1 {
-                    println!(
-                        "[pdf_summary] final merge recovered: document_id={}, attempt={}",
-                        document.id, attempt
-                    );
-                }
-                return content;
-            }
+            Ok(content) => return content,
             Err(err) => {
-                println!(
-                    "[pdf_summary] final merge failed: document_id={}, attempt={}/{}, error={}",
-                    document.id, attempt, FINAL_MERGE_MAX_ATTEMPTS, err
-                );
                 last_error = Some(err);
             }
         }
@@ -750,11 +662,6 @@ async fn summarize_direct(
     outline_items: &[PdfOutlineItem],
     chunks: &[PdfChunk],
 ) -> Result<AiNoteDraft, String> {
-    println!(
-        "[pdf_summary] direct summary start: document_id={}, chunks={}",
-        document.id,
-        chunks.len()
-    );
     let content = client
         .chat_text(
             vec![
@@ -764,12 +671,6 @@ async fn summarize_direct(
             0.2,
         )
         .await?;
-
-    println!(
-        "[pdf_summary] direct summary received: document_id={}, chars={}",
-        document.id,
-        char_count(&content)
-    );
 
     Ok(parse_ai_note(
         &content,
@@ -785,12 +686,6 @@ async fn summarize_batched(
     progress: &Channel<PdfSummaryProgress>,
 ) -> Result<AiNoteDraft, String> {
     let batches = build_batches(chunks);
-    println!(
-        "[pdf_summary] batched summary start: document_id={}, batches={}, chunks={}",
-        document.id,
-        batches.len(),
-        chunks.len()
-    );
     let total_batches = batches.len();
     send_progress(
         progress,
@@ -801,17 +696,7 @@ async fn summarize_batched(
     );
     let mut batch_requests = Vec::with_capacity(total_batches);
     for (index, batch) in batches.iter().enumerate() {
-        println!(
-            "[pdf_summary] batch {}/{} start: document_id={}, pages={}-{}, chunks={}, chars={}",
-            index + 1,
-            total_batches,
-            document.id,
-            batch.page_start,
-            batch.page_end,
-            batch.chunks.len(),
-            batch.char_count
-        );
-        let prompt = build_batch_prompt(document, outline_items, &batch);
+        let prompt = build_batch_prompt(document, outline_items, batch);
         let fallback_summary = build_batch_fallback_summary(batch);
         batch_requests.push(BatchSummaryRequest {
             index,
@@ -827,18 +712,11 @@ async fn summarize_batched(
     let mut failed_batch_errors = Vec::new();
     let mut completed_batches = 0usize;
     let mut batch_stream = stream::iter(batch_requests.into_iter())
-        .map(|request| summarize_batch_with_compensation(client, request, total_batches))
+        .map(|request| summarize_batch_with_compensation(client, request))
         .buffer_unordered(BATCH_SUMMARY_CONCURRENCY);
 
     while let Some(result) = batch_stream.next().await {
         completed_batches += 1;
-        println!(
-            "[pdf_summary] batch {}/{} received: document_id={}, summary_chars={}",
-            result.index + 1,
-            total_batches,
-            document.id,
-            char_count(&result.summary)
-        );
         if let Some(error) = result.error {
             failed_batch_errors.push(error);
         }
@@ -855,13 +733,6 @@ async fn summarize_batched(
         .into_iter()
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| "PDF 局部摘要生成不完整".to_string())?;
-    if !failed_batch_errors.is_empty() {
-        println!(
-            "[pdf_summary] batch compensation used: document_id={}, failed_batches={}",
-            document.id,
-            failed_batch_errors.len()
-        );
-    }
     let final_summaries = aggregate_summaries_if_needed(
         client,
         document,
@@ -871,16 +742,6 @@ async fn summarize_batched(
     )
     .await?;
 
-    let final_input_chars = final_summaries
-        .iter()
-        .map(|summary| char_count(summary))
-        .sum::<usize>();
-    println!(
-        "[pdf_summary] final merge start: document_id={}, batch_summaries={}, chars={}",
-        document.id,
-        final_summaries.len(),
-        final_input_chars
-    );
     send_progress(
         progress,
         AGGREGATE_PROGRESS_END,
@@ -898,11 +759,6 @@ async fn summarize_batched(
     )
     .await;
 
-    println!(
-        "[pdf_summary] final merge received: document_id={}, chars={}",
-        document.id,
-        char_count(&content)
-    );
     send_progress(progress, 100.0, "AI 总结完成", total_batches, total_batches);
 
     Ok(parse_ai_note(
@@ -916,25 +772,10 @@ pub async fn summarize_pdf_document(
     pdf_document_id: i64,
     progress: Channel<PdfSummaryProgress>,
 ) -> Result<AiNoteDraft, String> {
-    println!(
-        "[pdf_summary] command start: document_id={}",
-        pdf_document_id
-    );
     let document = get_pdf_document(pdf_document_id)?;
     let outline_items = get_pdf_outline_items(pdf_document_id)?;
     let chunks = get_pdf_chunks(pdf_document_id)?;
-    println!(
-        "[pdf_summary] loaded document: document_id={}, name=\"{}\", outlines={}, chunks={}",
-        document.id,
-        document.name,
-        outline_items.len(),
-        chunks.len()
-    );
     if chunks.is_empty() {
-        println!(
-            "[pdf_summary] abort: document_id={}, reason=no_chunks",
-            document.id
-        );
         return Err("当前 PDF 还没有文本切片，请先生成切片".to_string());
     }
 
@@ -942,18 +783,6 @@ pub async fn summarize_pdf_document(
         .iter()
         .map(|chunk| char_count(&chunk.content))
         .sum::<usize>();
-    let strategy = if total_chars <= DIRECT_SUMMARY_CHAR_LIMIT {
-        "direct"
-    } else {
-        "batched"
-    };
-    println!(
-        "[pdf_summary] strategy selected: document_id={}, strategy={}, total_chars={}, direct_limit={}",
-        document.id,
-        strategy,
-        total_chars,
-        DIRECT_SUMMARY_CHAR_LIMIT
-    );
     let client = AiClient::new()?;
     let mut note = if total_chars <= DIRECT_SUMMARY_CHAR_LIMIT {
         send_progress(&progress, 2.0, "生成 AI 总结", 0, 1);
@@ -968,19 +797,9 @@ pub async fn summarize_pdf_document(
         note.title = format!("AI总结：{}", document.name);
     }
     if note.content.trim().is_empty() {
-        println!(
-            "[pdf_summary] abort: document_id={}, reason=empty_ai_content",
-            document.id
-        );
         return Err("AI 没有返回可保存的 PDF 总结".to_string());
     }
 
     note.content = append_source_footer(&note.content, &document, &chunks);
-    println!(
-        "[pdf_summary] command done: document_id={}, title=\"{}\", content_chars={}",
-        document.id,
-        note.title,
-        char_count(&note.content)
-    );
     Ok(note)
 }

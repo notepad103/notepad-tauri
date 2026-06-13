@@ -116,8 +116,7 @@ fn largest_srcset_candidate(srcset: &str) -> Option<String> {
     srcset
         .split(',')
         .filter_map(|candidate| candidate.split_whitespace().next())
-        .filter(|src| !src.is_empty())
-        .last()
+        .rfind(|src| !src.is_empty())
         .map(ToString::to_string)
 }
 

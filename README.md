@@ -1,7 +1,17 @@
-# Tauri + React + Typescript
+# notepad-tauri
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+本项目是基于 Tauri、React 和 TypeScript 的本地笔记应用。
 
-## Recommended IDE Setup
+## 开发
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+```bash
+pnpm install
+pnpm tauri
+```
+
+## 构建
+
+```bash
+pnpm build
+pnpm tauri build
+```
