@@ -17,16 +17,23 @@ import {
   setEditorSearch,
 } from "../extensions/SearchHighlight";
 import type { NoteDetail } from "../mock/notes";
+import { notesStore } from "../store/notes";
 import { isHtmlContent, markdownToHtml, slug } from "../utils/markdown";
 
 interface EditorContentProps {
   noteDetail: NoteDetail;
   sourceNoteTitle?: string;
   sourcePdfName?: string;
-  onChangeTitle: (title: string) => void;
-  onChangeNote: (title: string, content: string) => void | Promise<void>;
+  noteSummaryLoading?: boolean;
+  onCreateNoteFromSelection?: (text: string) => void | Promise<void>;
   onOpenSourceNote?: () => void;
   onOpenSourcePdf?: () => void;
+}
+
+interface SelectionSummaryMenu {
+  x: number;
+  y: number;
+  text: string;
 }
 
 function sectionsToMarkdown(noteDetail: NoteDetail): string {
@@ -67,8 +74,8 @@ export default function EditorContent({
   noteDetail,
   sourceNoteTitle,
   sourcePdfName,
-  onChangeTitle,
-  onChangeNote,
+  noteSummaryLoading = false,
+  onCreateNoteFromSelection,
   onOpenSourceNote,
   onOpenSourcePdf,
 }: EditorContentProps) {
@@ -80,6 +87,8 @@ export default function EditorContent({
   const [searchCount, setSearchCount] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchVisible, setSearchVisible] = useState(false);
+  const [selectionSummaryMenu, setSelectionSummaryMenu] =
+    useState<SelectionSummaryMenu | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const normalEditorContent = useMemo(
     () => (isHtmlContent(content) ? content : markdownToHtml(content)),
@@ -147,7 +156,21 @@ export default function EditorContent({
 
   const saveNote = () => {
     const nextContent = editor ? editor.getHTML() : content;
-    void onChangeNote(title.trim() || "未命名笔记", nextContent);
+    void notesStore.actions.updateNote(
+      noteDetail.id,
+      title.trim() || "未命名笔记",
+      nextContent,
+    );
+  };
+
+  const getSelectedEditorText = () => {
+    if (!editor || editor.state.selection.empty) return "";
+
+    return editor.state.doc
+      .textBetween(editor.state.selection.from, editor.state.selection.to, "\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
   };
 
   const syncSearchState = () => {
@@ -224,6 +247,26 @@ export default function EditorContent({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [editor, searchVisible]);
 
+  useEffect(() => {
+    if (!selectionSummaryMenu) return;
+
+    const closeMenu = () => setSelectionSummaryMenu(null);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeMenu();
+    };
+
+    document.addEventListener("click", closeMenu);
+    document.addEventListener("scroll", closeMenu, true);
+    window.addEventListener("resize", closeMenu);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("click", closeMenu);
+      document.removeEventListener("scroll", closeMenu, true);
+      window.removeEventListener("resize", closeMenu);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [selectionSummaryMenu]);
+
   const focusEditorFromWrap = (event: MouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
     if (
@@ -242,6 +285,34 @@ export default function EditorContent({
     });
   };
 
+  const handleEditorContextMenu = (event: MouseEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+    if (!target.closest(".tiptap-editor-surface")) {
+      setSelectionSummaryMenu(null);
+      return;
+    }
+
+    const selectedText = getSelectedEditorText();
+    if (!selectedText) {
+      setSelectionSummaryMenu(null);
+      return;
+    }
+
+    event.preventDefault();
+    setSelectionSummaryMenu({
+      x: Math.min(event.clientX, window.innerWidth - 172),
+      y: Math.min(event.clientY, window.innerHeight - 48),
+      text: selectedText,
+    });
+  };
+
+  const handleCreateSelectionSummary = () => {
+    if (!selectionSummaryMenu || noteSummaryLoading) return;
+    const selectedText = selectionSummaryMenu.text;
+    setSelectionSummaryMenu(null);
+    void onCreateNoteFromSelection?.(selectedText);
+  };
+
   return (
     <main className="editor-panel">
       <div className="editor-content normal-editor">
@@ -252,7 +323,10 @@ export default function EditorContent({
             value={title}
             onChange={(event) => {
               setTitle(event.target.value);
-              onChangeTitle(event.target.value.trim() || "未命名笔记");
+              notesStore.actions.updateNoteTitleLocal(
+                noteDetail.id,
+                event.target.value.trim() || "未命名笔记",
+              );
             }}
             onBlur={saveNote}
           />
@@ -285,6 +359,7 @@ export default function EditorContent({
           <div
             className="tiptap-editor-wrap"
             onClick={focusEditorFromWrap}
+            onContextMenu={handleEditorContextMenu}
             onBlur={saveNote}
           >
             <div className="tiptap-toolbar">
@@ -395,6 +470,26 @@ export default function EditorContent({
             <TiptapEditorContent editor={editor} />
           </div>
         </section>
+        {selectionSummaryMenu && onCreateNoteFromSelection && (
+          <div
+            className="selection-context-menu"
+            style={{
+              left: selectionSummaryMenu.x,
+              top: selectionSummaryMenu.y,
+            }}
+            onClick={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.preventDefault()}
+          >
+            <button
+              type="button"
+              className="selection-context-menu-item"
+              disabled={noteSummaryLoading}
+              onClick={handleCreateSelectionSummary}
+            >
+              {noteSummaryLoading ? "摘要中..." : "创建摘要笔记"}
+            </button>
+          </div>
+        )}
         {searchVisible && (
           <div className="editor-search-box">
             <input

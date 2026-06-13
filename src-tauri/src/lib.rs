@@ -21,6 +21,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         })
         .invoke_handler(tauri::generate_handler![
             ai::summarize_webpage,
+            ai::summarize_note,
             ai::explain_article_terms,
             ai::explain_article_term_stream,
             ai::generate_term_knowledge_graph,

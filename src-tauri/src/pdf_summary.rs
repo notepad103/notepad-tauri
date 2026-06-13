@@ -3,14 +3,22 @@ use crate::base::sql::{
     get_pdf_chunks, get_pdf_document, get_pdf_outline_items, PdfChunk, PdfDocument, PdfOutlineItem,
 };
 use futures_util::{stream, StreamExt};
+use serde::Serialize;
+use tauri::ipc::Channel;
+
 const DIRECT_SUMMARY_CHAR_LIMIT: usize = 25_000;
 const BATCH_TARGET_CHAR_LIMIT: usize = 18_000;
 const BATCH_MAX_CHAR_LIMIT: usize = 22_000;
 const FINAL_INPUT_CHAR_LIMIT: usize = 30_000;
+const AGGREGATE_INPUT_CHAR_LIMIT: usize = 22_000;
 const OUTLINE_CHAR_LIMIT: usize = 8_000;
 const BATCH_SUMMARY_TARGET_CHARS: usize = 1_200;
 const BATCH_SUMMARY_CONCURRENCY: usize = 3;
 const BATCH_SUMMARY_MAX_ATTEMPTS: usize = 3;
+const AGGREGATE_SUMMARY_CONCURRENCY: usize = 2;
+const AGGREGATE_SUMMARY_MAX_ATTEMPTS: usize = 2;
+const BATCH_PROGRESS_END: f32 = 90.0;
+const AGGREGATE_PROGRESS_END: f32 = 98.0;
 const FINAL_MERGE_MAX_ATTEMPTS: usize = 2;
 const BATCH_FALLBACK_EXCERPT_CHAR_LIMIT: usize = 1_800;
 const BATCH_SUMMARY_MODEL: &str = "deepseek-chat";
@@ -37,6 +45,36 @@ struct BatchSummaryResult {
     error: Option<String>,
 }
 
+struct AggregateSummaryGroup {
+    index: usize,
+    batch_start: usize,
+    batch_end: usize,
+    summaries: Vec<(usize, String)>,
+    char_count: usize,
+}
+
+struct AggregateSummaryRequest {
+    index: usize,
+    batch_start: usize,
+    batch_end: usize,
+    prompt: String,
+    fallback_summary: String,
+}
+
+struct AggregateSummaryResult {
+    index: usize,
+    summary: String,
+    error: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct PdfSummaryProgress {
+    progress: f32,
+    message: String,
+    current: usize,
+    total: usize,
+}
+
 fn char_count(text: &str) -> usize {
     text.chars().count()
 }
@@ -58,6 +96,22 @@ fn log_ai_return_content(label: &str, content: &str) {
         content.trim(),
         label
     );
+}
+
+fn send_progress(
+    channel: &Channel<PdfSummaryProgress>,
+    progress: f32,
+    message: impl Into<String>,
+    current: usize,
+    total: usize,
+) {
+    let progress = progress.clamp(0.0, 100.0);
+    let _ = channel.send(PdfSummaryProgress {
+        progress,
+        message: message.into(),
+        current,
+        total,
+    });
 }
 
 fn document_label(document: &PdfDocument) -> String {
@@ -309,17 +363,271 @@ async fn summarize_batch_with_compensation(
     }
 }
 
+fn format_numbered_summaries(summaries: &[String], heading: &str) -> String {
+    summaries
+        .iter()
+        .enumerate()
+        .map(|(index, summary)| format!("## {} {}\n{}", heading, index + 1, summary.trim()))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn final_input_char_count(summaries: &[String]) -> usize {
+    char_count(&format_numbered_summaries(summaries, "局部摘要"))
+}
+
+fn build_aggregate_groups(batch_summaries: &[String]) -> Vec<AggregateSummaryGroup> {
+    let mut groups = Vec::new();
+    let mut summaries = Vec::new();
+    let mut char_count_total = 0usize;
+    let mut batch_start = 0usize;
+    let mut batch_end = 0usize;
+
+    for (index, summary) in batch_summaries.iter().enumerate() {
+        let entry_chars = char_count(summary) + 32;
+        let should_flush =
+            !summaries.is_empty() && char_count_total + entry_chars > AGGREGATE_INPUT_CHAR_LIMIT;
+
+        if should_flush {
+            groups.push(AggregateSummaryGroup {
+                index: groups.len(),
+                batch_start,
+                batch_end,
+                summaries,
+                char_count: char_count_total,
+            });
+            summaries = Vec::new();
+            char_count_total = 0;
+        }
+
+        if summaries.is_empty() {
+            batch_start = index + 1;
+        }
+        batch_end = index + 1;
+        char_count_total += entry_chars;
+        summaries.push((index + 1, summary.clone()));
+    }
+
+    if !summaries.is_empty() {
+        groups.push(AggregateSummaryGroup {
+            index: groups.len(),
+            batch_start,
+            batch_end,
+            summaries,
+            char_count: char_count_total,
+        });
+    }
+
+    groups
+}
+
+fn build_aggregate_prompt(document: &PdfDocument, group: &AggregateSummaryGroup) -> String {
+    let summaries = group
+        .summaries
+        .iter()
+        .map(|(index, summary)| format!("## 局部摘要 {}\n{}", index, summary.trim()))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    format!(
+        "请把一组 PDF 局部摘要压缩聚合成一个中间摘要，供最终全文总结使用。不要输出 JSON，只输出 Markdown。\n\n# PDF 信息\n{}\n\n# 当前摘要范围\n局部摘要 {}-{}，输入约 {} 字。\n\n# 局部摘要\n{}\n\n# 输出要求\n使用中文；控制在 2500 字以内；保留关键页码和章节线索；合并重复观点；不要编造未出现的信息；必须包含：\n### 聚合摘要 {}-{}\n- 核心结论：\n- 章节脉络：\n- 关键事实和数据：\n- 重要概念：\n- 覆盖范围和缺口：",
+        document_label(document),
+        group.batch_start,
+        group.batch_end,
+        group.char_count,
+        truncate_chars(&summaries, AGGREGATE_INPUT_CHAR_LIMIT),
+        group.batch_start,
+        group.batch_end
+    )
+}
+
+fn build_aggregate_fallback_summary(group: &AggregateSummaryGroup) -> String {
+    let summaries = group
+        .summaries
+        .iter()
+        .map(|(index, summary)| format!("### 局部摘要 {}\n{}", index, summary.trim()))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    format!(
+        "### 聚合摘要 {}-{}\n- 核心结论：该组聚合摘要请求失败，以下保留局部摘要摘录供最终合并参考。\n- 章节脉络：未完成自动聚合。\n- 关键事实和数据：请以下方局部摘要摘录为准。\n- 重要概念：未完成自动聚合。\n- 覆盖范围和缺口：局部摘要 {}-{} 聚合失败。\n\n#### 局部摘要摘录\n{}",
+        group.batch_start,
+        group.batch_end,
+        group.batch_start,
+        group.batch_end,
+        truncate_chars(&summaries, AGGREGATE_INPUT_CHAR_LIMIT)
+    )
+}
+
+async fn aggregate_summary_group_with_compensation(
+    client: &AiClient,
+    request: AggregateSummaryRequest,
+    total_groups: usize,
+) -> AggregateSummaryResult {
+    let mut last_error = None;
+
+    for attempt in 1..=AGGREGATE_SUMMARY_MAX_ATTEMPTS {
+        match client
+            .chat_text_with_model_without_reasoning(
+                BATCH_SUMMARY_MODEL,
+                vec![
+                    AiMessage::system("你是一个擅长压缩和聚合 PDF 局部摘要的中文阅读助手。直接输出摘要，不输出思考过程。"),
+                    AiMessage::user(request.prompt.clone()),
+                ],
+                0.2,
+            )
+            .await
+        {
+            Ok(summary) => {
+                log_ai_return_content(
+                    &format!("aggregate {}/{}", request.index + 1, total_groups),
+                    &summary,
+                );
+                if attempt > 1 {
+                    println!(
+                        "[pdf_summary] aggregate {}/{} recovered: batches={}-{}, attempt={}",
+                        request.index + 1,
+                        total_groups,
+                        request.batch_start,
+                        request.batch_end,
+                        attempt
+                    );
+                }
+                return AggregateSummaryResult {
+                    index: request.index,
+                    summary,
+                    error: None,
+                };
+            }
+            Err(err) => {
+                println!(
+                    "[pdf_summary] aggregate {}/{} failed: batches={}-{}, attempt={}/{}, error={}",
+                    request.index + 1,
+                    total_groups,
+                    request.batch_start,
+                    request.batch_end,
+                    attempt,
+                    AGGREGATE_SUMMARY_MAX_ATTEMPTS,
+                    err
+                );
+                last_error = Some(err);
+            }
+        }
+    }
+
+    let error = last_error.unwrap_or_else(|| "未知错误".to_string());
+    AggregateSummaryResult {
+        index: request.index,
+        summary: format!(
+            "{}\n\n- 异常说明：局部摘要 {}-{} 聚合连续 {} 次失败，最后错误：{}",
+            request.fallback_summary,
+            request.batch_start,
+            request.batch_end,
+            AGGREGATE_SUMMARY_MAX_ATTEMPTS,
+            error
+        ),
+        error: Some(format!(
+            "局部摘要 {}-{}：{}",
+            request.batch_start, request.batch_end, error
+        )),
+    }
+}
+
+async fn aggregate_summaries_if_needed(
+    client: &AiClient,
+    document: &PdfDocument,
+    batch_summaries: Vec<String>,
+    failed_batch_errors: &mut Vec<String>,
+    progress: &Channel<PdfSummaryProgress>,
+) -> Result<Vec<String>, String> {
+    let mut current_summaries = batch_summaries;
+    let mut round = 0usize;
+
+    while final_input_char_count(&current_summaries) > FINAL_INPUT_CHAR_LIMIT
+        && current_summaries.len() > 1
+    {
+        round += 1;
+        let groups = build_aggregate_groups(&current_summaries);
+        let total_groups = groups.len();
+        println!(
+            "[pdf_summary] aggregate layer start: document_id={}, round={}, groups={}, input_summaries={}, chars={}",
+            document.id,
+            round,
+            total_groups,
+            current_summaries.len(),
+            final_input_char_count(&current_summaries)
+        );
+        send_progress(
+            progress,
+            BATCH_PROGRESS_END,
+            format!("第 {} 轮聚合摘要，共 {} 组", round, total_groups),
+            0,
+            total_groups,
+        );
+
+        let requests = groups
+            .into_iter()
+            .map(|group| AggregateSummaryRequest {
+                index: group.index,
+                batch_start: group.batch_start,
+                batch_end: group.batch_end,
+                prompt: build_aggregate_prompt(document, &group),
+                fallback_summary: build_aggregate_fallback_summary(&group),
+            })
+            .collect::<Vec<_>>();
+
+        let mut summary_slots = vec![None; total_groups];
+        let mut completed_groups = 0usize;
+        let mut aggregate_stream = stream::iter(requests.into_iter())
+            .map(|request| aggregate_summary_group_with_compensation(client, request, total_groups))
+            .buffer_unordered(AGGREGATE_SUMMARY_CONCURRENCY);
+
+        while let Some(result) = aggregate_stream.next().await {
+            completed_groups += 1;
+            println!(
+                "[pdf_summary] aggregate {}/{} received: document_id={}, round={}, summary_chars={}",
+                result.index + 1,
+                total_groups,
+                document.id,
+                round,
+                char_count(&result.summary)
+            );
+            if let Some(error) = result.error {
+                failed_batch_errors.push(error);
+            }
+            summary_slots[result.index] = Some(result.summary);
+            let progress_value = BATCH_PROGRESS_END
+                + (completed_groups as f32 / total_groups as f32)
+                    * (AGGREGATE_PROGRESS_END - BATCH_PROGRESS_END);
+            send_progress(
+                progress,
+                progress_value,
+                format!("第 {} 轮聚合 {}/{}", round, completed_groups, total_groups),
+                completed_groups,
+                total_groups,
+            );
+        }
+
+        let next_summaries = summary_slots
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| "PDF 聚合摘要生成不完整".to_string())?;
+
+        if next_summaries.len() >= current_summaries.len() {
+            return Ok(next_summaries);
+        }
+        current_summaries = next_summaries;
+    }
+
+    Ok(current_summaries)
+}
+
 fn build_final_prompt(
     document: &PdfDocument,
     outline_items: &[PdfOutlineItem],
     batch_summaries: &[String],
 ) -> String {
-    let summaries = batch_summaries
-        .iter()
-        .enumerate()
-        .map(|(index, summary)| format!("## 局部摘要 {}\n{}", index + 1, summary.trim()))
-        .collect::<Vec<_>>()
-        .join("\n\n");
+    let summaries = format_numbered_summaries(batch_summaries, "局部摘要");
 
     format!(
         "请把多个 PDF 局部摘要合并成一篇可直接保存的中文阅读笔记。\n\n# PDF 信息\n{}\n\n# 目录\n{}\n\n# 局部摘要\n{}\n\n# 输出要求\n输出严格 JSON，格式为 {{\"title\":\"不超过24字的中文笔记标题\",\"summary\":\"Markdown 正文\"}}。\nsummary 必须包含这些二级标题：\n## 一句话概览\n## 核心结论\n## 章节脉络\n## 关键事实和数据\n## 重要概念\n## 可行动启发\n## 来源信息\n\n要求：合并重复观点；保留关键页码；如果局部摘要没有覆盖图片、表格或扫描页，要在来源信息中说明总结主要基于可提取文本。",
@@ -474,6 +782,7 @@ async fn summarize_batched(
     document: &PdfDocument,
     outline_items: &[PdfOutlineItem],
     chunks: &[PdfChunk],
+    progress: &Channel<PdfSummaryProgress>,
 ) -> Result<AiNoteDraft, String> {
     let batches = build_batches(chunks);
     println!(
@@ -483,6 +792,13 @@ async fn summarize_batched(
         chunks.len()
     );
     let total_batches = batches.len();
+    send_progress(
+        progress,
+        0.0,
+        format!("开始生成局部摘要，共 {} 批", total_batches),
+        0,
+        total_batches,
+    );
     let mut batch_requests = Vec::with_capacity(total_batches);
     for (index, batch) in batches.iter().enumerate() {
         println!(
@@ -509,11 +825,13 @@ async fn summarize_batched(
 
     let mut batch_summary_slots = vec![None; total_batches];
     let mut failed_batch_errors = Vec::new();
+    let mut completed_batches = 0usize;
     let mut batch_stream = stream::iter(batch_requests.into_iter())
         .map(|request| summarize_batch_with_compensation(client, request, total_batches))
         .buffer_unordered(BATCH_SUMMARY_CONCURRENCY);
 
     while let Some(result) = batch_stream.next().await {
+        completed_batches += 1;
         println!(
             "[pdf_summary] batch {}/{} received: document_id={}, summary_chars={}",
             result.index + 1,
@@ -525,6 +843,13 @@ async fn summarize_batched(
             failed_batch_errors.push(error);
         }
         batch_summary_slots[result.index] = Some(result.summary);
+        send_progress(
+            progress,
+            (completed_batches as f32 / total_batches as f32) * BATCH_PROGRESS_END,
+            format!("局部摘要 {}/{}", completed_batches, total_batches),
+            completed_batches,
+            total_batches,
+        );
     }
     let batch_summaries = batch_summary_slots
         .into_iter()
@@ -537,23 +862,38 @@ async fn summarize_batched(
             failed_batch_errors.len()
         );
     }
+    let final_summaries = aggregate_summaries_if_needed(
+        client,
+        document,
+        batch_summaries,
+        &mut failed_batch_errors,
+        progress,
+    )
+    .await?;
 
-    let final_input_chars = batch_summaries
+    let final_input_chars = final_summaries
         .iter()
         .map(|summary| char_count(summary))
         .sum::<usize>();
     println!(
         "[pdf_summary] final merge start: document_id={}, batch_summaries={}, chars={}",
         document.id,
-        batch_summaries.len(),
+        final_summaries.len(),
         final_input_chars
+    );
+    send_progress(
+        progress,
+        AGGREGATE_PROGRESS_END,
+        "整合最终总结",
+        total_batches,
+        total_batches,
     );
 
     let content = merge_batch_summaries_with_compensation(
         client,
         document,
         outline_items,
-        &batch_summaries,
+        &final_summaries,
         &failed_batch_errors,
     )
     .await;
@@ -563,6 +903,7 @@ async fn summarize_batched(
         document.id,
         char_count(&content)
     );
+    send_progress(progress, 100.0, "AI 总结完成", total_batches, total_batches);
 
     Ok(parse_ai_note(
         &content,
@@ -571,7 +912,10 @@ async fn summarize_batched(
 }
 
 #[tauri::command]
-pub async fn summarize_pdf_document(pdf_document_id: i64) -> Result<AiNoteDraft, String> {
+pub async fn summarize_pdf_document(
+    pdf_document_id: i64,
+    progress: Channel<PdfSummaryProgress>,
+) -> Result<AiNoteDraft, String> {
     println!(
         "[pdf_summary] command start: document_id={}",
         pdf_document_id
@@ -612,9 +956,12 @@ pub async fn summarize_pdf_document(pdf_document_id: i64) -> Result<AiNoteDraft,
     );
     let client = AiClient::new()?;
     let mut note = if total_chars <= DIRECT_SUMMARY_CHAR_LIMIT {
-        summarize_direct(&client, &document, &outline_items, &chunks).await?
+        send_progress(&progress, 2.0, "生成 AI 总结", 0, 1);
+        let note = summarize_direct(&client, &document, &outline_items, &chunks).await?;
+        send_progress(&progress, 100.0, "AI 总结完成", 1, 1);
+        note
     } else {
-        summarize_batched(&client, &document, &outline_items, &chunks).await?
+        summarize_batched(&client, &document, &outline_items, &chunks, &progress).await?
     };
 
     if note.title.trim().is_empty() {

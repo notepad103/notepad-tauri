@@ -1,36 +1,102 @@
-import type { Category } from "../mock/notes";
+import { useStore } from "@tanstack/react-store";
+import { confirm } from "@tauri-apps/plugin-dialog";
+import type { NoteDetail } from "../mock/notes";
+import { useAppActions } from "../context/AppActionsContext";
+import { notesStore } from "../store/notes";
+import { sidebarStore } from "../store/sidebar";
 
 interface EditorToolbarProps {
-  group_id: number | null;
-  is_pinned: boolean;
-  categories: Category[];
+  selectedNoteId: string;
+  noteDetail: NoteDetail;
   aiTermsLoading: boolean;
+  noteSummaryLoading: boolean;
   pdfLoading: boolean;
   pdfActive: boolean;
-  hasSelectedNote: boolean;
-  onChangeGroup: (group_id: number | null) => void | Promise<void>;
-  onToggleImportant: () => void;
-  onCreateNote: () => void | Promise<void>;
-  onOpenPdf: () => void | Promise<void>;
-  onOpenWebSummary: () => void;
+  onCreateNoteSummary: () => void | Promise<void>;
   onExplainTerms: () => void | Promise<void>;
 }
 
 export default function EditorToolbar({
-  group_id,
-  is_pinned,
-  categories,
+  selectedNoteId,
+  noteDetail,
   aiTermsLoading,
+  noteSummaryLoading,
   pdfLoading,
   pdfActive,
-  hasSelectedNote,
-  onChangeGroup,
-  onToggleImportant,
-  onCreateNote,
-  onOpenPdf,
-  onOpenWebSummary,
+  onCreateNoteSummary,
   onExplainTerms,
 }: EditorToolbarProps) {
+  const { customList, selectedId } = useStore(sidebarStore, (state) => state);
+  const {
+    noteCreated,
+    openPdf,
+    openWebSummary,
+    prepareNoteCreation,
+    selectNote,
+  } = useAppActions();
+  const hasSelectedNote = Boolean(selectedNoteId);
+
+  const handleChangeGroup = async (group_id: number | null) => {
+    if (!selectedNoteId || group_id === noteDetail.group_id) return;
+
+    const nextGroupLabel =
+      customList.find((category) => Number(category.id) === group_id)?.label ??
+      "无分类";
+    const confirmed = await confirm(
+      `确定将笔记「${noteDetail.title}」切换到「${nextGroupLabel}」吗？`,
+      {
+        title: "切换分类",
+        kind: "warning",
+        okLabel: "切换",
+        cancelLabel: "取消",
+      },
+    );
+    if (!confirmed) return;
+
+    const detail = await notesStore.actions.updateNoteGroup(
+      selectedNoteId,
+      group_id,
+    );
+    await notesStore.actions.loadNotes();
+    await sidebarStore.actions.getList();
+
+    const selectedCategory = customList.find((cat) => cat.id === selectedId);
+    if (selectedCategory) {
+      const firstNoteInCategory = notesStore
+        .get()
+        .list.find(
+          (note) => Number(note.group_id) === Number(selectedCategory.id),
+        );
+      void selectNote(firstNoteInCategory?.id ?? "");
+      return;
+    }
+
+    void selectNote(detail.id);
+  };
+
+  const handleToggleImportant = async () => {
+    if (!selectedNoteId) return;
+
+    const detail = await notesStore.actions.updateNotePinned(
+      selectedNoteId,
+      !noteDetail.is_pinned,
+    );
+    await notesStore.actions.loadNotes();
+    void selectNote(detail.id);
+  };
+
+  const handleCreateNote = async () => {
+    prepareNoteCreation();
+    const selectedCategory = customList.find((cat) => cat.id === selectedId);
+    const detail = await notesStore.actions.addNote({
+      group_id: selectedCategory ? Number(selectedCategory.id) : null,
+      note_type: "normal",
+    });
+    await notesStore.actions.loadNotes();
+    await sidebarStore.actions.getList();
+    noteCreated(detail.id);
+  };
+
   return (
     <header className="editor-toolbar">
       <div className="editor-toolbar-spacer" />
@@ -38,14 +104,14 @@ export default function EditorToolbar({
         <>
           <select
             className="toolbar-select"
-            value={group_id ?? ""}
+            value={noteDetail.group_id ?? ""}
             onChange={(event) => {
               const value = event.target.value;
-              void onChangeGroup(value ? Number(value) : null);
+              void handleChangeGroup(value ? Number(value) : null);
             }}
           >
             <option value="">无分类</option>
-            {categories.map((category) => (
+            {customList.map((category) => (
               <option key={category.id} value={category.id}>
                 {category.label}
               </option>
@@ -53,13 +119,27 @@ export default function EditorToolbar({
           </select>
           <button
             type="button"
-            className={`toolbar-btn ${is_pinned ? "toolbar-btn-active" : ""}`}
-            onClick={onToggleImportant}
+            className={`toolbar-btn ${
+              noteDetail.is_pinned ? "toolbar-btn-active" : ""
+            }`}
+            onClick={() => {
+              void handleToggleImportant();
+            }}
           >
-            {is_pinned ? "取消标记" : "标记为重要"}
+            {noteDetail.is_pinned ? "取消标记" : "标记为重要"}
           </button>
           {!pdfActive && (
             <>
+              <button
+                type="button"
+                className="toolbar-btn"
+                disabled={noteSummaryLoading}
+                onClick={() => {
+                  void onCreateNoteSummary();
+                }}
+              >
+                {noteSummaryLoading ? "摘要中..." : "摘要笔记"}
+              </button>
               <button
                 type="button"
                 className="toolbar-btn"
@@ -80,7 +160,7 @@ export default function EditorToolbar({
         className={`toolbar-btn ${pdfActive ? "toolbar-btn-active" : ""}`}
         disabled={pdfLoading}
         onClick={() => {
-          void onOpenPdf();
+          void openPdf();
         }}
       >
         {pdfLoading ? "打开中..." : "打开 PDF"}
@@ -88,7 +168,7 @@ export default function EditorToolbar({
       <button
         type="button"
         className="toolbar-btn"
-        onClick={onOpenWebSummary}
+        onClick={openWebSummary}
       >
         AI 总结网页
       </button>
@@ -96,7 +176,7 @@ export default function EditorToolbar({
         type="button"
         className="toolbar-btn toolbar-btn-primary"
         onClick={() => {
-          void onCreateNote();
+          void handleCreateNote();
         }}
       >
         新建笔记

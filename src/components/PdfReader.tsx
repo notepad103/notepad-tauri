@@ -1,5 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+} from "react";
+import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.mjs?url";
 
@@ -21,6 +28,7 @@ interface PdfReaderProps {
   document: PdfDocument;
   onReadingChange: (page: number, pageCount: number) => void;
   onSummaryCreated: (summary: PdfSummary) => void | Promise<void>;
+  onCreateNoteFromSelection?: (text: string) => void | Promise<void>;
 }
 
 export interface PdfSummary {
@@ -80,7 +88,41 @@ interface PdfPageText {
   content: string;
 }
 
-type ChunkStatus = "idle" | "checking" | "extracting" | "saving" | "ready" | "empty" | "error";
+interface PdfPageRenderMetric {
+  width: number;
+  height: number;
+  scale: number;
+}
+
+interface LoadedPdfState {
+  documentId: number;
+  pdf: pdfjsLib.PDFDocumentProxy;
+  task: pdfjsLib.PDFDocumentLoadingTask;
+}
+
+type ChunkStatus =
+  | "idle"
+  | "checking"
+  | "extracting"
+  | "saving"
+  | "summarizing"
+  | "ready"
+  | "empty"
+  | "error";
+type OutlineStatus = "idle" | "loading" | "extracting" | "ready" | "empty" | "error";
+interface PdfSummaryProgress {
+  progress: number;
+  message: string;
+  current: number;
+  total: number;
+}
+interface SelectionSummaryMenu {
+  x: number;
+  y: number;
+  text: string;
+}
+type PdfRenderTask = ReturnType<pdfjsLib.PDFPageProxy["render"]>;
+type PdfTextLayer = InstanceType<typeof pdfjsLib.TextLayer>;
 type PdfTextItem = Awaited<
   ReturnType<pdfjsLib.PDFPageProxy["getTextContent"]>
 >["items"][number];
@@ -96,6 +138,18 @@ function formatFileSize(size: number): string {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function isPdfRenderCanceledError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return (
+    err.name === "RenderingCancelledException" ||
+    err.name === "AbortException" ||
+    err.message.includes("Worker was destroyed") ||
+    err.message.includes("Transport destroyed") ||
+    err.message.includes("sendWithPromise") ||
+    err.message.includes("messageHandler")
+  );
 }
 
 function normalizePdfText(text: string): string {
@@ -317,8 +371,9 @@ export default function PdfReader({
   document,
   onReadingChange,
   onSummaryCreated,
+  onCreateNoteFromSelection,
 }: PdfReaderProps) {
-  const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
+  const [loadedPdfState, setLoadedPdfState] = useState<LoadedPdfState | null>(null);
   const [pageCount, setPageCount] = useState(document.page_count || 0);
   const [currentPage, setCurrentPage] = useState(
     Math.max(document.last_page || 1, 1),
@@ -327,46 +382,140 @@ export default function PdfReader({
   const [error, setError] = useState("");
   const [chunkStatus, setChunkStatus] = useState<ChunkStatus>("idle");
   const [chunkMessage, setChunkMessage] = useState("");
+  const [summaryProgress, setSummaryProgress] =
+    useState<PdfSummaryProgress | null>(null);
+  const [selectionSummaryMenu, setSelectionSummaryMenu] =
+    useState<SelectionSummaryMenu | null>(null);
+  const [outlineItems, setOutlineItems] = useState<PdfOutlineItem[]>([]);
+  const [outlineStatus, setOutlineStatus] = useState<OutlineStatus>("idle");
+  const [outlineMessage, setOutlineMessage] = useState("");
   const pagesRef = useRef<HTMLDivElement>(null);
   const canvasRefs = useRef<(HTMLCanvasElement | null)[]>([]);
+  const textLayerRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const pageRenderMetricsRef = useRef<(PdfPageRenderMetric | null)[]>([]);
+  const activeTextLayersRef = useRef<Map<number, PdfTextLayer>>(new Map());
+  const renderedTextLayerPagesRef = useRef<Set<number>>(new Set());
+  const textLayerStopTimerRef = useRef<number | null>(null);
+  const textLayerRenderVersionRef = useRef(0);
   const scrollFrameRef = useRef<number | null>(null);
-  const renderedDocumentIdRef = useRef<number | null>(null);
+  const currentPageRef = useRef(currentPage);
   const jumpedDocumentIdRef = useRef<number | null>(null);
   const chunkRequestIdRef = useRef(0);
+  const pdf =
+    loadedPdfState?.documentId === document.id ? loadedPdfState.pdf : null;
 
   const pageNumbers = useMemo(
     () => Array.from({ length: pageCount }, (_, index) => index + 1),
     [pageCount],
   );
+  const activeOutlineItemId = useMemo(() => {
+    return outlineItems.reduce<number | null>((activeId, item) => {
+      if (!item.page_number || item.page_number > currentPage) return activeId;
+      if (activeId === null) return item.id;
+
+      const activeItem = outlineItems.find((outline) => outline.id === activeId);
+      if (!activeItem?.page_number) return item.id;
+      return item.page_number >= activeItem.page_number ? item.id : activeId;
+    }, null);
+  }, [currentPage, outlineItems]);
+
+  const getSelectedPdfText = useCallback(() => {
+    const selection = window.getSelection();
+    const pagesEl = pagesRef.current;
+    if (!selection || selection.isCollapsed || !pagesEl) return "";
+
+    const anchorNode = selection.anchorNode;
+    const focusNode = selection.focusNode;
+    if (
+      !anchorNode ||
+      !focusNode ||
+      !pagesEl.contains(anchorNode) ||
+      !pagesEl.contains(focusNode)
+    ) {
+      return "";
+    }
+
+    return normalizePdfText(selection.toString());
+  }, []);
+
+  const handlePdfContextMenu = useCallback(
+    (event: MouseEvent<HTMLDivElement>) => {
+      const target = event.target as HTMLElement;
+      if (!target.closest(".pdf-reader-text-layer")) {
+        setSelectionSummaryMenu(null);
+        return;
+      }
+
+      const selectedText = getSelectedPdfText();
+      if (!selectedText) {
+        setSelectionSummaryMenu(null);
+        return;
+      }
+
+      event.preventDefault();
+      setSelectionSummaryMenu({
+        x: Math.min(event.clientX, window.innerWidth - 172),
+        y: Math.min(event.clientY, window.innerHeight - 48),
+        text: selectedText,
+      });
+    },
+    [getSelectedPdfText],
+  );
+
+  const handleCreateSelectionSummary = () => {
+    if (!selectionSummaryMenu) return;
+    const selectedText = selectionSummaryMenu.text;
+    setSelectionSummaryMenu(null);
+    void onCreateNoteFromSelection?.(selectedText);
+  };
 
   useEffect(() => {
     let canceled = false;
     let task: pdfjsLib.PDFDocumentLoadingTask | null = null;
-    setPdf(null);
+    let publishedPdf = false;
+    setLoadedPdfState(null);
     setLoading(true);
     setError("");
     setChunkStatus("idle");
     setChunkMessage("");
+    setSummaryProgress(null);
+    setOutlineItems([]);
+    setOutlineStatus("idle");
+    setOutlineMessage("");
     setPageCount(document.page_count || 0);
-    setCurrentPage(Math.max(document.last_page || 1, 1));
-    renderedDocumentIdRef.current = null;
+    canvasRefs.current = [];
+    textLayerRefs.current = [];
+    pageRenderMetricsRef.current = [];
+    activeTextLayersRef.current.forEach((textLayer) => textLayer.cancel());
+    activeTextLayersRef.current.clear();
+    renderedTextLayerPagesRef.current.clear();
+    textLayerRenderVersionRef.current += 1;
+    if (textLayerStopTimerRef.current !== null) {
+      window.clearTimeout(textLayerStopTimerRef.current);
+      textLayerStopTimerRef.current = null;
+    }
+    const initialPage = Math.max(document.last_page || 1, 1);
+    currentPageRef.current = initialPage;
+    setCurrentPage(initialPage);
     jumpedDocumentIdRef.current = null;
     chunkRequestIdRef.current += 1;
 
-    invoke<number[]>("read_pdf_document_file", { id: document.id })
-      .then((bytes) => {
+    invoke<string>("read_pdf_document_file", { id: document.id })
+      .then((path) => {
         if (canceled) return null;
-        task = pdfjsLib.getDocument({ data: new Uint8Array(bytes) });
+        task = pdfjsLib.getDocument({ url: convertFileSrc(path) });
         return task.promise;
       })
-      .then((loadedPdf) => {
-        if (!loadedPdf) return;
+      .then((nextPdf) => {
+        if (!nextPdf || !task) return;
         if (canceled) {
+          void task.destroy();
           return;
         }
-        setPdf(loadedPdf);
-        setPageCount(loadedPdf.numPages);
-        onReadingChange(Math.max(document.last_page || 1, 1), loadedPdf.numPages);
+        publishedPdf = true;
+        setLoadedPdfState({ documentId: document.id, pdf: nextPdf, task });
+        setPageCount(nextPdf.numPages);
+        onReadingChange(Math.max(document.last_page || 1, 1), nextPdf.numPages);
       })
       .catch((err) => {
         if (canceled) return;
@@ -378,14 +527,101 @@ export default function PdfReader({
 
     return () => {
       canceled = true;
-      task?.destroy();
+      activeTextLayersRef.current.forEach((textLayer) => textLayer.cancel());
+      activeTextLayersRef.current.clear();
+      if (textLayerStopTimerRef.current !== null) {
+        window.clearTimeout(textLayerStopTimerRef.current);
+        textLayerStopTimerRef.current = null;
+      }
+      if (!publishedPdf) {
+        void task?.destroy();
+      }
     };
   }, [document.id, onReadingChange]);
+
+  useEffect(() => {
+    if (!selectionSummaryMenu) return;
+
+    const closeMenu = () => setSelectionSummaryMenu(null);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeMenu();
+    };
+
+    window.document.addEventListener("click", closeMenu);
+    window.document.addEventListener("scroll", closeMenu, true);
+    window.addEventListener("resize", closeMenu);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.document.removeEventListener("click", closeMenu);
+      window.document.removeEventListener("scroll", closeMenu, true);
+      window.removeEventListener("resize", closeMenu);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [selectionSummaryMenu]);
+
+  useEffect(() => {
+    if (!pdf) return;
+
+    let canceled = false;
+
+    const loadOutlineItems = async () => {
+      try {
+        setOutlineStatus("loading");
+        setOutlineMessage("加载目录");
+        const existingItems = await invoke<PdfOutlineItem[]>(
+          "get_pdf_outline_items",
+          {
+            pdfDocumentId: document.id,
+          },
+        );
+        if (canceled) return;
+
+        if (existingItems.length) {
+          setOutlineItems(existingItems);
+          setOutlineStatus("ready");
+          setOutlineMessage(`${existingItems.length} 个目录项`);
+          return;
+        }
+
+        setOutlineStatus("extracting");
+        setOutlineMessage("提取目录");
+        const extractedItems = await extractPdfOutlineItems(pdf);
+        if (canceled) return;
+
+        const savedItems = await invoke<PdfOutlineItem[]>(
+          "save_pdf_outline_items",
+          {
+            pdfDocumentId: document.id,
+            items: extractedItems,
+          },
+        );
+        if (canceled) return;
+
+        setOutlineItems(savedItems);
+        setOutlineStatus(savedItems.length ? "ready" : "empty");
+        setOutlineMessage(
+          savedItems.length ? `${savedItems.length} 个目录项` : "未发现内置目录",
+        );
+      } catch (err) {
+        if (canceled) return;
+        setOutlineItems([]);
+        setOutlineStatus("error");
+        setOutlineMessage(err instanceof Error ? err.message : String(err));
+      }
+    };
+
+    void loadOutlineItems();
+
+    return () => {
+      canceled = true;
+    };
+  }, [document.id, pdf]);
 
   const chunkBusy =
     chunkStatus === "checking" ||
     chunkStatus === "extracting" ||
-    chunkStatus === "saving";
+    chunkStatus === "saving" ||
+    chunkStatus === "summarizing";
 
   const handleAiSummaryClick = useCallback(async () => {
     if (!pdf || chunkBusy) return;
@@ -418,11 +654,22 @@ export default function PdfReader({
             ? `保存 ${outlineItems.length} 个目录项`
             : "未发现内置目录",
         );
-        await invoke<PdfOutlineItem[]>("save_pdf_outline_items", {
+        const savedOutlineItems = await invoke<PdfOutlineItem[]>("save_pdf_outline_items", {
           pdfDocumentId: document.id,
           items: outlineItems,
         });
         if (isStaleRequest()) return;
+        setOutlineItems(savedOutlineItems);
+        setOutlineStatus(savedOutlineItems.length ? "ready" : "empty");
+        setOutlineMessage(
+          savedOutlineItems.length
+            ? `${savedOutlineItems.length} 个目录项`
+            : "未发现内置目录",
+        );
+      } else {
+        setOutlineItems(existingOutlineItems);
+        setOutlineStatus("ready");
+        setOutlineMessage(`${existingOutlineItems.length} 个目录项`);
       }
 
       setChunkStatus("checking");
@@ -464,30 +711,148 @@ export default function PdfReader({
         setChunkMessage(`${savedChunks.length} 个文本切片`);
       }
 
-      setChunkStatus("saving");
+      setChunkStatus("summarizing");
       setChunkMessage("生成 AI 总结");
+      setSummaryProgress({
+        progress: 0,
+        message: "准备生成 AI 总结",
+        current: 0,
+        total: 0,
+      });
+      const progress = new Channel<PdfSummaryProgress>((event) => {
+        if (isStaleRequest()) return;
+        setSummaryProgress(event);
+        setChunkMessage(event.message);
+      });
       const summary = await invoke<PdfSummary>("summarize_pdf_document", {
         pdfDocumentId: document.id,
+        progress,
       });
       if (isStaleRequest()) return;
 
       setChunkStatus("ready");
+      setSummaryProgress((current) =>
+        current
+          ? {
+              ...current,
+              progress: 100,
+              message: "AI 总结完成",
+            }
+          : current,
+      );
       setChunkMessage("已生成总结");
       await onSummaryCreated(summary);
     } catch (err) {
       if (isStaleRequest()) return;
       setChunkStatus("error");
+      setSummaryProgress(null);
       setChunkMessage(err instanceof Error ? err.message : String(err));
     }
   }, [chunkBusy, document.id, onSummaryCreated, pdf]);
 
-  useEffect(() => {
-    if (!pdf || !pageCount || renderedDocumentIdRef.current === document.id) {
-      return;
+  const hideTextLayers = useCallback(() => {
+    textLayerRefs.current.forEach((textLayerDiv) => {
+      textLayerDiv?.classList.add("pdf-reader-text-layer-hidden");
+    });
+  }, []);
+
+  const cancelActiveTextLayerRender = useCallback(() => {
+    textLayerRenderVersionRef.current += 1;
+    activeTextLayersRef.current.forEach((textLayer) => textLayer.cancel());
+    activeTextLayersRef.current.clear();
+  }, []);
+
+  const getVisibleTextLayerPages = useCallback(() => {
+    const pagesEl = pagesRef.current;
+    if (!pagesEl || !pageCount) return [];
+
+    const containerRect = pagesEl.getBoundingClientRect();
+    const pages = new Set<number>();
+    canvasRefs.current.forEach((canvas, index) => {
+      const pageEl = canvas?.parentElement;
+      if (!pageEl) return;
+
+      const rect = pageEl.getBoundingClientRect();
+      if (
+        rect.bottom >= containerRect.top - 80 &&
+        rect.top <= containerRect.bottom + 80
+      ) {
+        pages.add(index + 1);
+      }
+    });
+
+    if (!pages.size) {
+      pages.add(Math.min(Math.max(currentPageRef.current, 1), pageCount));
     }
 
+    return Array.from(pages).sort((a, b) => a - b);
+  }, [pageCount]);
+
+  const renderTextLayerPage = useCallback(
+    async (pageNumber: number, version: number) => {
+      if (!pdf) return;
+      const textLayerDiv = textLayerRefs.current[pageNumber - 1];
+      const metric = pageRenderMetricsRef.current[pageNumber - 1];
+      if (!textLayerDiv || !metric) return;
+
+      if (renderedTextLayerPagesRef.current.has(pageNumber)) {
+        textLayerDiv.classList.remove("pdf-reader-text-layer-hidden");
+        return;
+      }
+      if (activeTextLayersRef.current.has(pageNumber)) return;
+
+      const page = await pdf.getPage(pageNumber);
+      if (textLayerRenderVersionRef.current !== version) return;
+
+      const viewport = page.getViewport({ scale: metric.scale });
+      textLayerDiv.replaceChildren();
+      textLayerDiv.style.width = `${metric.width}px`;
+      textLayerDiv.style.height = `${metric.height}px`;
+
+      const textLayer = new pdfjsLib.TextLayer({
+        textContentSource: page.streamTextContent({
+          includeMarkedContent: true,
+          disableNormalization: true,
+        }),
+        container: textLayerDiv,
+        viewport,
+      });
+      activeTextLayersRef.current.set(pageNumber, textLayer);
+
+      try {
+        await textLayer.render();
+      } catch (err) {
+        if (isPdfRenderCanceledError(err)) return;
+        throw err;
+      } finally {
+        activeTextLayersRef.current.delete(pageNumber);
+      }
+
+      if (textLayerRenderVersionRef.current !== version) return;
+      renderedTextLayerPagesRef.current.add(pageNumber);
+      textLayerDiv.classList.remove("pdf-reader-text-layer-hidden");
+    },
+    [pdf],
+  );
+
+  const renderVisibleTextLayers = useCallback(() => {
+    const version = textLayerRenderVersionRef.current;
+    getVisibleTextLayerPages().forEach((pageNumber) => {
+      void renderTextLayerPage(pageNumber, version).catch((err) => {
+        if (!isPdfRenderCanceledError(err)) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    });
+  }, [getVisibleTextLayerPages, renderTextLayerPage]);
+
+  useEffect(() => {
+    if (!pdf || !pageCount) return;
+
     let canceled = false;
-    renderedDocumentIdRef.current = document.id;
+    let activeRenderTask: PdfRenderTask | null = null;
+    let jumpFrame: number | null = null;
+    const targetPage = Math.min(Math.max(document.last_page || 1, 1), pageCount);
 
     const renderPages = async () => {
       const containerWidth = Math.max(
@@ -497,7 +862,13 @@ export default function PdfReader({
 
       for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
         if (canceled) return;
-        const canvas = canvasRefs.current[pageNumber - 1];
+        let canvas = canvasRefs.current[pageNumber - 1];
+        if (!canvas) {
+          await new Promise<void>((resolve) => {
+            requestAnimationFrame(() => resolve());
+          });
+          canvas = canvasRefs.current[pageNumber - 1];
+        }
         if (!canvas) continue;
 
         const page = await pdf.getPage(pageNumber);
@@ -513,17 +884,34 @@ export default function PdfReader({
         canvas.height = Math.floor(viewport.height);
         canvas.style.width = `${Math.floor(viewport.width)}px`;
         canvas.style.height = `${Math.floor(viewport.height)}px`;
+        pageRenderMetricsRef.current[pageNumber - 1] = {
+          width: Math.floor(viewport.width),
+          height: Math.floor(viewport.height),
+          scale,
+        };
+        const pageEl = canvas.parentElement;
+        if (pageEl) {
+          pageEl.style.setProperty("--scale-factor", `${scale}`);
+          pageEl.style.setProperty("--user-unit", "1");
+          pageEl.style.setProperty("--total-scale-factor", `${scale}`);
+          pageEl.style.setProperty("--scale-round-x", "1px");
+          pageEl.style.setProperty("--scale-round-y", "1px");
+        }
+
+        const renderTask = page.render({ canvas, canvasContext: context, viewport });
+        activeRenderTask = renderTask;
 
         try {
-          await page.render({ canvas, canvasContext: context, viewport }).promise;
+          await renderTask.promise;
         } catch (err) {
-          if (
-            err instanceof Error &&
-            err.name === "RenderingCancelledException"
-          ) {
+          if (canceled || isPdfRenderCanceledError(err)) {
             return;
           }
           throw err;
+        } finally {
+          if (activeRenderTask === renderTask) {
+            activeRenderTask = null;
+          }
         }
       }
     };
@@ -532,14 +920,17 @@ export default function PdfReader({
       .then(() => {
         if (canceled || jumpedDocumentIdRef.current === document.id) return;
         jumpedDocumentIdRef.current = document.id;
-        requestAnimationFrame(() => {
-          const targetPage = Math.min(
-            Math.max(document.last_page || 1, 1),
-            pageCount,
-          );
+        jumpFrame = requestAnimationFrame(() => {
           canvasRefs.current[targetPage - 1]?.parentElement?.scrollIntoView({
             block: "start",
           });
+          if (textLayerStopTimerRef.current !== null) {
+            window.clearTimeout(textLayerStopTimerRef.current);
+          }
+          textLayerStopTimerRef.current = window.setTimeout(() => {
+            textLayerStopTimerRef.current = null;
+            renderVisibleTextLayers();
+          }, 220);
         });
       })
       .catch((err) => {
@@ -548,8 +939,13 @@ export default function PdfReader({
 
     return () => {
       canceled = true;
+      activeRenderTask?.cancel();
+      activeRenderTask = null;
+      if (jumpFrame !== null) {
+        cancelAnimationFrame(jumpFrame);
+      }
     };
-  }, [document.id, document.last_page, pageCount, pdf]);
+  }, [document.id, pageCount, pdf, renderVisibleTextLayers]);
 
   useEffect(() => {
     const pagesEl = pagesRef.current;
@@ -576,14 +972,23 @@ export default function PdfReader({
         }
       });
 
-      setCurrentPage((previous) => {
-        if (previous === nearestPage) return previous;
-        onReadingChange(nearestPage, pageCount);
-        return nearestPage;
-      });
+      if (currentPageRef.current === nearestPage) return;
+      currentPageRef.current = nearestPage;
+      setCurrentPage(nearestPage);
+      onReadingChange(nearestPage, pageCount);
     };
 
     const handleScroll = () => {
+      hideTextLayers();
+      cancelActiveTextLayerRender();
+      if (textLayerStopTimerRef.current !== null) {
+        window.clearTimeout(textLayerStopTimerRef.current);
+      }
+      textLayerStopTimerRef.current = window.setTimeout(() => {
+        textLayerStopTimerRef.current = null;
+        renderVisibleTextLayers();
+      }, 220);
+
       if (scrollFrameRef.current !== null) return;
       scrollFrameRef.current = window.requestAnimationFrame(syncCurrentPage);
     };
@@ -594,8 +999,26 @@ export default function PdfReader({
       if (scrollFrameRef.current !== null) {
         window.cancelAnimationFrame(scrollFrameRef.current);
       }
+      if (textLayerStopTimerRef.current !== null) {
+        window.clearTimeout(textLayerStopTimerRef.current);
+        textLayerStopTimerRef.current = null;
+      }
     };
-  }, [onReadingChange, pageCount]);
+  }, [
+    cancelActiveTextLayerRender,
+    hideTextLayers,
+    onReadingChange,
+    pageCount,
+    renderVisibleTextLayers,
+  ]);
+
+  useEffect(() => {
+    if (!loadedPdfState) return;
+
+    return () => {
+      void loadedPdfState.task.destroy();
+    };
+  }, [loadedPdfState]);
 
   const jumpToPage = (page: number) => {
     const targetPage = Math.min(Math.max(page, 1), Math.max(pageCount, 1));
@@ -603,8 +1026,14 @@ export default function PdfReader({
       block: "start",
       behavior: "smooth",
     });
+    currentPageRef.current = targetPage;
     setCurrentPage(targetPage);
     onReadingChange(targetPage, pageCount);
+  };
+
+  const handleOutlineClick = (item: PdfOutlineItem) => {
+    if (!item.page_number) return;
+    jumpToPage(item.page_number);
   };
 
   return (
@@ -635,6 +1064,22 @@ export default function PdfReader({
               {chunkMessage}
             </div>
           )}
+          {summaryProgress && chunkStatus === "summarizing" && (
+            <div
+              className="pdf-reader-summary-progress"
+              aria-label={`AI 总结进度 ${Math.round(summaryProgress.progress)}%`}
+            >
+              <div className="pdf-reader-summary-progress-track">
+                <div
+                  className="pdf-reader-summary-progress-bar"
+                  style={{
+                    width: `${Math.round(summaryProgress.progress)}%`,
+                  }}
+                />
+              </div>
+              <span>{Math.round(summaryProgress.progress)}%</span>
+            </div>
+          )}
           <div className="pdf-reader-page-status" aria-live="polite">
             {pageCount ? `${currentPage} / ${pageCount}` : "加载中"}
           </div>
@@ -648,36 +1093,111 @@ export default function PdfReader({
           </button>
         </div>
       </header>
-      <section className="pdf-reader-surface">
-        {error ? (
-          <div className="pdf-reader-message" role="alert">
-            {error}
-          </div>
-        ) : (
-          <div ref={pagesRef} className="pdf-reader-pages">
-            {loading && !pageCount ? (
-              <div className="pdf-reader-message" role="status">
-                正在加载 PDF...
-              </div>
-            ) : (
-              pageNumbers.map((pageNumber) => (
-                <article
-                  key={`${document.id}-${pageNumber}`}
-                  className="pdf-reader-page"
-                  aria-label={`第 ${pageNumber} 页`}
-                >
-                  <div className="pdf-reader-page-number">{pageNumber}</div>
-                  <canvas
-                    ref={(element) => {
-                      canvasRefs.current[pageNumber - 1] = element;
+      <div className="pdf-reader-workspace">
+        <section className="pdf-reader-surface">
+          {error ? (
+            <div className="pdf-reader-message" role="alert">
+              {error}
+            </div>
+          ) : (
+            <div
+              ref={pagesRef}
+              className="pdf-reader-pages"
+              onContextMenu={handlePdfContextMenu}
+            >
+              {loading && !pageCount ? (
+                <div className="pdf-reader-message" role="status">
+                  正在加载 PDF...
+                </div>
+              ) : (
+                pageNumbers.map((pageNumber) => (
+                  <article
+                    key={`${document.id}-${pageNumber}`}
+                    className="pdf-reader-page"
+                    aria-label={`第 ${pageNumber} 页`}
+                  >
+                    <div className="pdf-reader-page-number">{pageNumber}</div>
+                    <canvas
+                      ref={(element) => {
+                        canvasRefs.current[pageNumber - 1] = element;
+                      }}
+                    />
+                    <div
+                      ref={(element) => {
+                        textLayerRefs.current[pageNumber - 1] = element;
+                      }}
+                      className="textLayer pdf-reader-text-layer pdf-reader-text-layer-hidden"
+                      aria-hidden="true"
+                    />
+                  </article>
+                ))
+              )}
+            </div>
+          )}
+          {selectionSummaryMenu && onCreateNoteFromSelection && (
+            <div
+              className="selection-context-menu"
+              style={{
+                left: selectionSummaryMenu.x,
+                top: selectionSummaryMenu.y,
+              }}
+              onClick={(event) => event.stopPropagation()}
+              onMouseDown={(event) => event.preventDefault()}
+            >
+              <button
+                type="button"
+                className="selection-context-menu-item"
+                onClick={handleCreateSelectionSummary}
+              >
+                创建摘要笔记
+              </button>
+            </div>
+          )}
+        </section>
+        <aside className="pdf-outline-panel">
+          <header className="panel-header">
+            <h2>目录</h2>
+          </header>
+          <nav className="pdf-outline-list" aria-label="PDF 目录">
+            {outlineItems.length ? (
+              outlineItems.map((item) => {
+                const pageNumber = item.page_number;
+                const isActive = item.id === activeOutlineItemId;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`pdf-outline-link ${
+                      isActive ? "pdf-outline-link-active" : ""
+                    }`}
+                    style={{
+                      paddingLeft: `${Math.min(Math.max(item.level, 1), 5) * 10}px`,
                     }}
-                  />
-                </article>
-              ))
+                    disabled={!pageNumber}
+                    title={
+                      pageNumber
+                        ? `${item.title} - 第 ${pageNumber} 页`
+                        : `${item.title} - 未定位页码`
+                    }
+                    onClick={() => handleOutlineClick(item)}
+                  >
+                    <span>{item.title}</span>
+                    {pageNumber && <small>{pageNumber}</small>}
+                  </button>
+                );
+              })
+            ) : (
+              <p className="toc-empty">
+                {outlineStatus === "loading" || outlineStatus === "extracting"
+                  ? outlineMessage || "正在加载目录"
+                  : outlineStatus === "error"
+                    ? outlineMessage || "目录加载失败"
+                    : "当前 PDF 暂无目录"}
+              </p>
             )}
-          </div>
-        )}
-      </section>
+          </nav>
+        </aside>
+      </div>
     </main>
   );
 }

@@ -1,6 +1,7 @@
 export type NavFilter = "all" | "today" | "important";
 export type NoteType =
   | "normal"
+  | "note_summary"
   | "pdf_note"
   | "pdf_summary"
   | "web_summary"

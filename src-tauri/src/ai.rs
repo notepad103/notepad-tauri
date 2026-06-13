@@ -711,6 +711,65 @@ pub async fn summarize_webpage(url: String) -> Result<WebpageSummary, String> {
 }
 
 #[tauri::command]
+pub async fn summarize_note(title: String, content: String) -> Result<WebpageSummary, String> {
+    let source_title = title.trim();
+    let note_content = compact_article_content(&content);
+    if note_content.chars().count() < 80 {
+        return Err("当前笔记内容太短，无法生成摘要笔记".to_string());
+    }
+
+    let title_evidence = if source_title.is_empty() {
+        "未命名笔记"
+    } else {
+        source_title
+    };
+    let prompt = build_rewoo_prompt(RewooPrompt {
+        objective: "把用户的当前笔记整理成一篇可独立保存的中文摘要笔记。",
+        plan: &[
+            "阅读笔记标题和正文，识别核心主题、结论、关键事实、待办、问题和可复用知识点。",
+            "保留原笔记中影响理解的数字、时间、人物、产品、机构、引用和术语。",
+            "过滤寒暄、重复记录、格式噪声和不影响理解的细枝末节。",
+            "按 Output Contract 生成严格 JSON。",
+        ],
+        evidence: &[
+            RewooEvidence {
+                label: "原笔记标题",
+                content: title_evidence,
+            },
+            RewooEvidence {
+                label: "原笔记内容",
+                content: &note_content,
+            },
+        ],
+        output_contract: "用中文；只依据原笔记内容，不要编造原文没有的信息；输出严格 JSON，格式为 {\"title\":\"不超过24字的中文摘要标题\",\"summary\":\"Markdown 正文\"}。\n\nsummary 必须使用下面固定 Markdown 结构：\n## 一句话摘要\n用 1 到 2 句话说明这条笔记最重要的信息。\n\n## 核心要点\n用 3 到 6 条列表提炼主要观点、结论、论据或步骤。\n\n## 关键事实和细节\n用列表保留原笔记中的重要事实、数字、时间、人物、产品、机构、链接或引用；如果原笔记没有明确事实，写“- 原笔记没有提供明确事实”。\n\n## 待跟进问题\n列出 0 到 5 条仍需确认、继续阅读、执行或追踪的问题；没有则写“- 暂无”。\n\n## 可复用启发\n用 2 到 4 条列表写出这条笔记之后可如何使用，必须具体。",
+    });
+
+    let content = AiClient::new()?
+        .chat_text(
+            vec![
+                AiMessage::system("你是一个擅长把原始记录整理成中文摘要笔记的助手。"),
+                AiMessage::user(prompt),
+            ],
+            0.2,
+        )
+        .await?;
+
+    let fallback_title = format!("摘要：{}", title_evidence);
+    let mut summary = parse_ai_note(&content, &fallback_title);
+    if summary.title.is_empty() {
+        summary.title = fallback_title;
+    }
+    if summary.content.is_empty() {
+        return Err("DeepSeek 返回了空摘要".to_string());
+    }
+
+    Ok(WebpageSummary {
+        title: summary.title,
+        content: summary.content,
+    })
+}
+
+#[tauri::command]
 pub async fn explain_article_terms(title: String, content: String) -> Result<Vec<AiTerm>, String> {
     let source_title = title.trim();
     let article = compact_article_content(&content);

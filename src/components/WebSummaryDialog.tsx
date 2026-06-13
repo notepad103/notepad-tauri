@@ -1,27 +1,66 @@
 import { useEffect, useRef, useState } from "react";
+import { useStore } from "@tanstack/react-store";
+import { invoke } from "@tauri-apps/api/core";
+import { useAppActions } from "../context/AppActionsContext";
+import { notesStore } from "../store/notes";
+import { sidebarStore } from "../store/sidebar";
+import { buildWebReadingNoteContent } from "../utils/readingNotes";
+
+interface WebpageSummary {
+  title: string;
+  content: string;
+}
 
 interface WebSummaryDialogProps {
   open: boolean;
-  loading: boolean;
-  error: string;
   onClose: () => void;
-  onSubmit: (url: string) => void | Promise<void>;
 }
 
 export default function WebSummaryDialog({
   open,
-  loading,
-  error,
   onClose,
-  onSubmit,
 }: WebSummaryDialogProps) {
+  const { customList, selectedId } = useStore(sidebarStore, (state) => state);
+  const { noteCreated } = useAppActions();
   const [url, setUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleClose = () => {
     if (loading) return;
     setUrl("");
     onClose();
+  };
+
+  const handleSubmit = async () => {
+    const targetUrl = url.trim();
+    if (!targetUrl) return;
+
+    setLoading(true);
+    setError("");
+    try {
+      const summary = await invoke<WebpageSummary>("summarize_webpage", {
+        url: targetUrl,
+      });
+      const selectedCategory = customList.find((cat) => cat.id === selectedId);
+      const detail = await notesStore.actions.addNote({
+        group_id: selectedCategory ? Number(selectedCategory.id) : null,
+        note_type: "web_summary",
+        title: summary.title || "AI 网页阅读笔记",
+        content: buildWebReadingNoteContent(summary.content, targetUrl),
+      });
+
+      await notesStore.actions.loadNotes();
+      await sidebarStore.actions.getList();
+      noteCreated(detail.id);
+      setUrl("");
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -34,6 +73,7 @@ export default function WebSummaryDialog({
   useEffect(() => {
     if (open) return;
     setUrl("");
+    setError("");
   }, [open]);
 
   if (!open) return null;
@@ -44,7 +84,7 @@ export default function WebSummaryDialog({
         className="web-summary-dialog"
         onSubmit={(event) => {
           event.preventDefault();
-          void onSubmit(url);
+          void handleSubmit();
         }}
       >
         <div className="web-summary-header">

@@ -1,19 +1,18 @@
 import { useMemo, useState } from "react";
 import { useStore } from "@tanstack/react-store";
 import { confirm } from "@tauri-apps/plugin-dialog";
+import { useAppActions } from "../context/AppActionsContext";
 import { sidebarStore } from "../store/sidebar";
 import { notesStore } from "../store/notes";
 import type { NavFilter, NoteType } from "../mock/notes";
 
 interface NoteListPanelProps {
   selectedNoteId: string;
-  onCreateNote: () => void | Promise<void>;
-  onDeleteNote: (id: string) => void | Promise<void>;
-  onSelectNote: (id: string) => void | Promise<void>;
 }
 
 const NOTE_TYPE_ICON: Record<NoteType, { label: string; title: string }> = {
   normal: { label: "N", title: "普通笔记" },
+  note_summary: { label: "A", title: "摘要笔记" },
   pdf_note: { label: "P", title: "PDF 关联笔记" },
   pdf_summary: { label: "S", title: "PDF 总结笔记" },
   web_summary: { label: "W", title: "网页总结笔记" },
@@ -22,12 +21,10 @@ const NOTE_TYPE_ICON: Record<NoteType, { label: string; title: string }> = {
 
 export default function NoteListPanel({
   selectedNoteId,
-  onCreateNote,
-  onDeleteNote,
-  onSelectNote,
 }: NoteListPanelProps) {
   const { customList, selectedId } = useStore(sidebarStore, (state) => state);
   const noteListItems = useStore(notesStore, (state) => state.list);
+  const { noteCreated, prepareNoteCreation, selectNote } = useAppActions();
   const [searchQuery, setSearchQuery] = useState("");
 
   const isCustomCategory = useMemo(() => {
@@ -57,6 +54,29 @@ export default function NoteListPanel({
     );
   };
 
+  const getNotesInCurrentScope = (notes: typeof noteListItems) => {
+    return notes.filter((note) => {
+      if (activeNav === "today" && !isToday(note.created_at)) return false;
+      if (activeNav === "important" && !note.is_pinned) return false;
+      if (activeCategory) {
+        return Number(note.group_id) === Number(activeCategory);
+      }
+      return true;
+    });
+  };
+
+  const handleCreateNote = async () => {
+    prepareNoteCreation();
+    const selectedCategory = customList.find((cat) => cat.id === selectedId);
+    const detail = await notesStore.actions.addNote({
+      group_id: selectedCategory ? Number(selectedCategory.id) : null,
+      note_type: "normal",
+    });
+    await notesStore.actions.loadNotes();
+    await sidebarStore.actions.getList();
+    noteCreated(detail.id);
+  };
+
   const handleDeleteNote = async (id: string, title: string) => {
     const confirmed = await confirm(`确定删除笔记「${title}」吗？`, {
       title: "删除笔记",
@@ -66,7 +86,23 @@ export default function NoteListPanel({
     });
     if (!confirmed) return;
 
-    await onDeleteNote(id);
+    const currentList = getNotesInCurrentScope(notesStore.get().list);
+    const deletedIndex = currentList.findIndex((note) => note.id === id);
+    await notesStore.actions.deleteNote(id);
+    await notesStore.actions.loadNotes();
+    await sidebarStore.actions.getList();
+
+    const nextList = getNotesInCurrentScope(notesStore.get().list);
+    if (!nextList.length) {
+      await selectNote("");
+      return;
+    }
+
+    if (selectedNoteId !== id) return;
+
+    const nextNote =
+      nextList[Math.min(Math.max(deletedIndex, 0), nextList.length - 1)];
+    await selectNote(nextNote.id);
   };
 
   const filteredNotes = useMemo(() => {
@@ -126,7 +162,7 @@ export default function NoteListPanel({
         description: "新建后会自动归入当前分类。",
         actionLabel: "新建笔记",
         action: () => {
-          void onCreateNote();
+          void handleCreateNote();
         },
       };
     }
@@ -137,7 +173,7 @@ export default function NoteListPanel({
         description: "记录一条新的想法，它会出现在这里。",
         actionLabel: "新建笔记",
         action: () => {
-          void onCreateNote();
+          void handleCreateNote();
         },
       };
     }
@@ -148,7 +184,7 @@ export default function NoteListPanel({
         description: "把关键内容标记为重要后，会集中显示在这里。",
         actionLabel: "新建笔记",
         action: () => {
-          void onCreateNote();
+          void handleCreateNote();
         },
       };
     }
@@ -158,10 +194,10 @@ export default function NoteListPanel({
       description: "新建第一条笔记，开始整理今天的内容。",
       actionLabel: "新建笔记",
       action: () => {
-        void onCreateNote();
+        void handleCreateNote();
       },
     };
-  }, [activeCategoryLabel, activeNav, hasSearchQuery, onCreateNote]);
+  }, [activeCategoryLabel, activeNav, hasSearchQuery]);
 
   return (
     <section className="note-list-panel">
@@ -198,11 +234,13 @@ export default function NoteListPanel({
                 role="button"
                 tabIndex={0}
                 className={`note-card ${selectedNoteId === note.id ? "note-card-active" : ""}`}
-                onClick={() => onSelectNote(note.id)}
+                onClick={() => {
+                  void selectNote(note.id);
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
-                    onSelectNote(note.id);
+                    void selectNote(note.id);
                   }
                 }}
               >

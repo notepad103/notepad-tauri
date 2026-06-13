@@ -531,7 +531,7 @@ pub fn get_pdf_document(id: i64) -> Result<PdfDocument, String> {
 }
 
 #[tauri::command]
-pub fn read_pdf_document_file(id: i64) -> Result<Vec<u8>, String> {
+pub fn read_pdf_document_file(id: i64) -> Result<String, String> {
     let conn = DB.lock().unwrap();
     let stored_path: String = conn
         .query_row(
@@ -542,7 +542,8 @@ pub fn read_pdf_document_file(id: i64) -> Result<Vec<u8>, String> {
         .map_err(|err| err.to_string())?;
     drop(conn);
 
-    fs::read(&stored_path).map_err(|err| format!("读取 PDF 失败：{err}"))
+    fs::metadata(&stored_path).map_err(|err| format!("读取 PDF 失败：{err}"))?;
+    Ok(stored_path)
 }
 
 #[tauri::command]
