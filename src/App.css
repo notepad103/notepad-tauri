@@ -100,6 +100,15 @@ ul {
 }
 
 .editor-workspace {
+  display: flex;
+  position: relative;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.editor-workspace-body {
   display: grid;
   grid-template-columns: 1fr 220px;
   flex: 1;
@@ -1477,7 +1486,7 @@ ul {
   position: relative;
   flex: 1;
   overflow: hidden;
-  padding: 24px 32px 40px;
+  padding: 16px 32px 40px;
   min-height: 0;
 }
 
@@ -1491,6 +1500,20 @@ ul {
   flex: 1;
 }
 
+.note-header {
+  flex-shrink: 0;
+  padding: 22px 32px 14px;
+  border-bottom: 1px solid #e8eaed;
+  background: #fff;
+}
+
+.note-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+
 .markdown-source {
   display: flex;
   flex-direction: column;
@@ -1498,11 +1521,12 @@ ul {
 }
 
 .editor-title-input {
+  flex: 1;
   width: 100%;
-  margin: 0 0 16px;
+  min-width: 0;
+  margin: 0;
   padding: 0 0 10px;
   border: 0;
-  border-bottom: 1px solid #e5e7eb;
   outline: none;
   font: inherit;
   font-size: 26px;
@@ -1513,14 +1537,64 @@ ul {
 }
 
 .editor-title-input:focus {
-  border-bottom-color: #3b82f6;
+  outline: none;
+}
+
+.note-term-toggle {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin-top: 1px;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  color: #475569;
+  background: #fff;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.note-term-toggle:hover,
+.note-term-toggle-active {
+  border-color: #bfdbfe;
+  color: #2563eb;
+  background: #eff6ff;
+}
+
+.note-term-toggle-icon {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.note-term-toggle-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border: 2px solid #fff;
+  border-radius: 999px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 13px;
+  text-align: center;
 }
 
 .source-note-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: -6px 0 14px;
+  margin: 10px 0 0;
   min-width: 0;
   color: #6b7280;
   font-size: 12px;
@@ -1653,25 +1727,30 @@ ul {
 .selection-context-menu {
   position: fixed;
   z-index: 30;
+  display: inline-flex;
   min-width: 160px;
-  padding: 6px;
-  border: 1px solid #dbe3ef;
-  border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
+  padding: 4px;
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
+  backdrop-filter: blur(8px);
 }
 
 .selection-context-menu-item {
   display: flex;
   width: 100%;
-  height: 32px;
+  height: 34px;
   align-items: center;
+  justify-content: center;
   padding: 0 10px;
-  border-radius: 6px;
-  color: #27303f;
+  border-radius: 999px;
+  color: #111827;
   font-size: 13px;
+  font-weight: 600;
   line-height: 1;
   text-align: left;
+  white-space: nowrap;
 }
 
 .selection-context-menu-item:hover {
@@ -1855,7 +1934,7 @@ ul {
   display: flex;
   flex-direction: column;
   padding: 4px 12px 16px;
-  max-height: 48%;
+  flex: 1;
   overflow-y: auto;
 }
 
@@ -1898,7 +1977,6 @@ ul {
   min-height: 0;
   flex: 1;
   flex-direction: column;
-  border-top: 1px solid #e8eaed;
 }
 
 .term-panel-header {
@@ -1907,6 +1985,50 @@ ul {
   justify-content: space-between;
   gap: 8px;
   padding: 12px 16px 6px;
+}
+
+.term-sidebar-tabs {
+  display: inline-flex;
+  min-width: 0;
+  padding: 2px;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.term-sidebar-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 58px;
+  height: 26px;
+  justify-content: center;
+  border-radius: 6px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.term-sidebar-tab span {
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.term-sidebar-tab-active {
+  color: #1d4ed8;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+}
+
+.term-sidebar-tab-active span {
+  color: #2563eb;
+}
+
+.term-panel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 .term-panel-header h2 {
@@ -1939,6 +2061,65 @@ ul {
   background: #f8fafc;
 }
 
+.term-sidebar-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: block;
+  cursor: default;
+  background: rgba(15, 23, 42, 0.08);
+}
+
+.term-sidebar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9;
+  display: flex;
+  width: 300px;
+  max-width: min(300px, 82%);
+  border-left: 1px solid #e1e7ef;
+  background: #fff;
+  box-shadow: -18px 0 36px rgba(15, 23, 42, 0.12);
+  pointer-events: none;
+  transform: translateX(100%);
+  visibility: hidden;
+  transition: transform 0.2s ease, visibility 0.2s ease;
+}
+
+.term-sidebar-open {
+  pointer-events: auto;
+  transform: translateX(0);
+  visibility: visible;
+}
+
+.term-sidebar-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.term-sidebar-close:hover {
+  color: #1f2937;
+  background: #f1f5f9;
+}
+
+.term-sidebar-close-icon {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 2;
+}
+
 .term-list {
   display: flex;
   flex: 1;
@@ -1947,6 +2128,68 @@ ul {
   gap: 6px;
   overflow-y: auto;
   padding: 4px 12px 16px;
+}
+
+.reference-list {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  padding: 8px 12px 16px;
+}
+
+.reference-card {
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #e8eaed;
+  border-radius: 8px;
+  background: #fff;
+  text-align: left;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.reference-card:hover {
+  border-color: #bfdbfe;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.08);
+}
+
+.reference-card-body {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.reference-card-title {
+  overflow: hidden;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reference-card-preview {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.reference-card-time {
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1;
 }
 
 .term-chip {

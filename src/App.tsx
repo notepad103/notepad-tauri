@@ -13,7 +13,9 @@ import NoteListPanel from "./components/NoteListPanel";
 import EditorToolbar from "./components/EditorToolbar";
 import EditorEmptyPanel from "./components/EditorEmptyPanel";
 import EditorContent from "./components/EditorContent";
+import NoteHeader from "./components/NoteHeader";
 import TocPanel from "./components/TocPanel";
+import TermSidebar from "./components/TermSidebar";
 import WebSummaryDialog from "./components/WebSummaryDialog";
 import TermExplainDialog from "./components/TermExplainDialog";
 import SettingsPage from "./components/SettingsPage";
@@ -62,6 +64,7 @@ function App() {
   const [webSummaryOpen, setWebSummaryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsClosing, setSettingsClosing] = useState(false);
+  const [termSidebarOpen, setTermSidebarOpen] = useState(false);
   const settingsCloseTimer = useRef<number | null>(null);
   const resetTermExplainRef = useRef<() => void>(() => {});
   const { customList, selectedId } = useStore(sidebarStore, (state) => state);
@@ -73,6 +76,13 @@ function App() {
     [notesState, selectedNoteId],
   );
   const toc = useMemo(() => buildToc(noteDetail), [noteDetail]);
+  const referenceNotes = useMemo(() => {
+    if (!noteDetail.note_id) return [];
+    return notesState.list.filter(
+      (note) =>
+        note.id !== noteDetail.id && note.source_note_id === noteDetail.note_id,
+    );
+  }, [noteDetail.id, noteDetail.note_id, notesState.list]);
   const sourceNoteId = noteDetail.source_note_id
     ? `db-${noteDetail.source_note_id}`
     : "";
@@ -141,6 +151,12 @@ function App() {
   useEffect(() => {
     resetTermExplainRef.current = noteAi.resetTermExplain;
   }, [noteAi.resetTermExplain]);
+
+  useEffect(() => {
+    if (!selectedNoteId || pdfDocument) {
+      setTermSidebarOpen(false);
+    }
+  }, [pdfDocument, selectedNoteId]);
 
   const sourcePdf = noteDetail.pdf_document_id
     ? pdfDocuments.find((document) => document.id === noteDetail.pdf_document_id)
@@ -262,32 +278,73 @@ function App() {
             onExplainTerms={noteAi.explainTerms}
           />
           {pdfDocument ? (
-            <PdfReader
-              document={pdfDocument}
-              onReadingChange={updatePdfReadingPosition}
-              onSummaryCreated={createPdfSummaryNote}
-              onCreateNoteFromSelection={noteAi.createNoteFromSelection}
-            />
+            <div className="editor-workspace">
+              <PdfReader
+                document={pdfDocument}
+                termCount={noteAi.termPanelTerms.length}
+                termSidebarOpen={termSidebarOpen}
+                onReadingChange={updatePdfReadingPosition}
+                onSummaryCreated={createPdfSummaryNote}
+                onCreateNoteFromSelection={noteAi.createNoteFromSelection}
+                onOpenTerms={() => setTermSidebarOpen(true)}
+              />
+              <TermSidebar
+                open={termSidebarOpen}
+                terms={noteAi.termPanelTerms}
+                referenceNotes={referenceNotes}
+                aiTermsLoading={noteAi.aiTermsLoading}
+                onClose={() => setTermSidebarOpen(false)}
+                onSelectTerm={noteAi.selectTerm}
+                onOpenArticle={(noteId) => {
+                  setTermSidebarOpen(false);
+                  void handleSelectNote(noteId);
+                }}
+                onOpenReference={(noteId) => {
+                  setTermSidebarOpen(false);
+                  void handleSelectNote(noteId);
+                }}
+                onRegenerateTerms={noteAi.explainTerms}
+              />
+            </div>
           ) : selectedNoteId ? (
             <div className="editor-workspace">
-              <EditorContent
-                key={noteDetail.id}
+              <NoteHeader
                 noteDetail={noteDetail}
                 sourceNoteTitle={sourceNoteTitle}
                 sourcePdfName={sourcePdf?.name}
-                noteSummaryLoading={noteAi.noteSummaryLoading}
-                onCreateNoteFromSelection={noteAi.createNoteFromSelection}
+                termCount={noteAi.termPanelTerms.length}
+                termSidebarOpen={termSidebarOpen}
                 onOpenSourceNote={
                   sourceNoteTitle ? handleOpenSourceNote : undefined
                 }
                 onOpenSourcePdf={sourcePdf ? handleOpenSourcePdf : undefined}
+                onOpenTerms={() => setTermSidebarOpen(true)}
               />
-              <TocPanel
-                toc={toc}
+              <div className="editor-workspace-body">
+                <EditorContent
+                  key={noteDetail.id}
+                  noteDetail={noteDetail}
+                  onCreateNoteFromSelection={noteAi.createNoteFromSelection}
+                />
+                <TocPanel
+                  toc={toc}
+                />
+              </div>
+              <TermSidebar
+                open={termSidebarOpen}
                 terms={noteAi.termPanelTerms}
+                referenceNotes={referenceNotes}
                 aiTermsLoading={noteAi.aiTermsLoading}
+                onClose={() => setTermSidebarOpen(false)}
                 onSelectTerm={noteAi.selectTerm}
-                onOpenArticle={handleSelectNote}
+                onOpenArticle={(noteId) => {
+                  setTermSidebarOpen(false);
+                  void handleSelectNote(noteId);
+                }}
+                onOpenReference={(noteId) => {
+                  setTermSidebarOpen(false);
+                  void handleSelectNote(noteId);
+                }}
                 onRegenerateTerms={noteAi.explainTerms}
               />
             </div>

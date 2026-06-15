@@ -9,6 +9,7 @@ import {
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.mjs?url";
+import TermToggleButton from "./TermToggleButton";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
@@ -26,9 +27,12 @@ export interface PdfDocument {
 
 interface PdfReaderProps {
   document: PdfDocument;
+  termCount?: number;
+  termSidebarOpen?: boolean;
   onReadingChange: (page: number, pageCount: number) => void;
   onSummaryCreated: (summary: PdfSummary) => void | Promise<void>;
   onCreateNoteFromSelection?: (text: string) => void | Promise<void>;
+  onOpenTerms?: () => void;
 }
 
 export interface PdfSummary {
@@ -369,9 +373,12 @@ async function extractPdfPageTexts(
 
 export default function PdfReader({
   document,
+  termCount = 0,
+  termSidebarOpen = false,
   onReadingChange,
   onSummaryCreated,
   onCreateNoteFromSelection,
+  onOpenTerms,
 }: PdfReaderProps) {
   const [loadedPdfState, setLoadedPdfState] = useState<LoadedPdfState | null>(null);
   const [pageCount, setPageCount] = useState(document.page_count || 0);
@@ -437,6 +444,58 @@ export default function PdfReader({
 
     return normalizePdfText(selection.toString());
   }, []);
+
+  const updateSelectionSummaryMenu = useCallback(() => {
+    const selection = window.getSelection();
+    const pagesEl = pagesRef.current;
+    if (
+      !selection ||
+      selection.isCollapsed ||
+      selection.rangeCount === 0 ||
+      !pagesEl ||
+      !selection.anchorNode ||
+      !selection.focusNode ||
+      !pagesEl.contains(selection.anchorNode) ||
+      !pagesEl.contains(selection.focusNode)
+    ) {
+      setSelectionSummaryMenu(null);
+      return;
+    }
+
+    const selectedText = getSelectedPdfText();
+    if (!selectedText) {
+      setSelectionSummaryMenu(null);
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    const fallbackRect = Array.from(range.getClientRects()).find(
+      (item) => item.width || item.height,
+    );
+    const rect = range.getBoundingClientRect();
+    const selectionRect = rect.width || rect.height ? rect : fallbackRect;
+    if (!selectionRect) {
+      setSelectionSummaryMenu(null);
+      return;
+    }
+
+    const menuWidth = 160;
+    const x = Math.min(
+      Math.max(selectionRect.left + selectionRect.width / 2 - menuWidth / 2, 8),
+      window.innerWidth - menuWidth - 8,
+    );
+    const preferredTop = selectionRect.top - 48;
+    const y =
+      preferredTop >= 8
+        ? preferredTop
+        : Math.min(selectionRect.bottom + 8, window.innerHeight - 48);
+
+    setSelectionSummaryMenu({
+      x,
+      y,
+      text: selectedText,
+    });
+  }, [getSelectedPdfText]);
 
   const handlePdfContextMenu = useCallback(
     (event: MouseEvent<HTMLDivElement>) => {
@@ -558,6 +617,34 @@ export default function PdfReader({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [selectionSummaryMenu]);
+
+  useEffect(() => {
+    if (!onCreateNoteFromSelection) return;
+
+    let frame: number | null = null;
+    const scheduleUpdate = () => {
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+      }
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        updateSelectionSummaryMenu();
+      });
+    };
+
+    const pagesEl = pagesRef.current;
+    window.document.addEventListener("selectionchange", scheduleUpdate);
+    pagesEl?.addEventListener("mouseup", scheduleUpdate);
+    pagesEl?.addEventListener("keyup", scheduleUpdate);
+    return () => {
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+      }
+      window.document.removeEventListener("selectionchange", scheduleUpdate);
+      pagesEl?.removeEventListener("mouseup", scheduleUpdate);
+      pagesEl?.removeEventListener("keyup", scheduleUpdate);
+    };
+  }, [onCreateNoteFromSelection, updateSelectionSummaryMenu]);
 
   useEffect(() => {
     if (!pdf) return;
@@ -1047,6 +1134,13 @@ export default function PdfReader({
           </div>
         </div>
         <div className="pdf-reader-actions">
+          {onOpenTerms && (
+            <TermToggleButton
+              active={termSidebarOpen}
+              count={termCount}
+              onClick={onOpenTerms}
+            />
+          )}
           <button
             type="button"
             className="toolbar-btn toolbar-btn-primary"

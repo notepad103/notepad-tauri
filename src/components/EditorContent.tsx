@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -22,12 +23,7 @@ import { isHtmlContent, markdownToHtml, slug } from "../utils/markdown";
 
 interface EditorContentProps {
   noteDetail: NoteDetail;
-  sourceNoteTitle?: string;
-  sourcePdfName?: string;
-  noteSummaryLoading?: boolean;
   onCreateNoteFromSelection?: (text: string) => void | Promise<void>;
-  onOpenSourceNote?: () => void;
-  onOpenSourcePdf?: () => void;
 }
 
 interface SelectionSummaryMenu {
@@ -72,14 +68,8 @@ function scheduleHeadingIds(container: HTMLElement | null) {
 
 export default function EditorContent({
   noteDetail,
-  sourceNoteTitle,
-  sourcePdfName,
-  noteSummaryLoading = false,
   onCreateNoteFromSelection,
-  onOpenSourceNote,
-  onOpenSourcePdf,
 }: EditorContentProps) {
-  const [title, setTitle] = useState(noteDetail.title);
   const [content, setContent] = useState(
     noteDetail.content ?? sectionsToMarkdown(noteDetail),
   );
@@ -139,7 +129,6 @@ export default function EditorContent({
 
   useEffect(() => {
     const nextContent = noteDetail.content ?? sectionsToMarkdown(noteDetail);
-    setTitle(noteDetail.title);
     setContent(nextContent);
 
     if (editor) {
@@ -158,7 +147,7 @@ export default function EditorContent({
     const nextContent = editor ? editor.getHTML() : content;
     void notesStore.actions.updateNote(
       noteDetail.id,
-      title.trim() || "未命名笔记",
+      noteDetail.title.trim() || "未命名笔记",
       nextContent,
     );
   };
@@ -172,6 +161,58 @@ export default function EditorContent({
       .replace(/\n{3,}/g, "\n\n")
       .trim();
   };
+
+  const updateSelectionSummaryMenu = useCallback(() => {
+    const editorSurface = editor?.view.dom;
+    const selection = window.getSelection();
+    if (
+      !editorSurface ||
+      !selection ||
+      selection.isCollapsed ||
+      selection.rangeCount === 0 ||
+      !selection.anchorNode ||
+      !selection.focusNode ||
+      !editorSurface.contains(selection.anchorNode) ||
+      !editorSurface.contains(selection.focusNode)
+    ) {
+      setSelectionSummaryMenu(null);
+      return;
+    }
+
+    const selectedText = getSelectedEditorText();
+    if (!selectedText) {
+      setSelectionSummaryMenu(null);
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    const fallbackRect = Array.from(range.getClientRects()).find(
+      (item) => item.width || item.height,
+    );
+    const rect = range.getBoundingClientRect();
+    const selectionRect = rect.width || rect.height ? rect : fallbackRect;
+    if (!selectionRect) {
+      setSelectionSummaryMenu(null);
+      return;
+    }
+
+    const menuWidth = 160;
+    const x = Math.min(
+      Math.max(selectionRect.left + selectionRect.width / 2 - menuWidth / 2, 8),
+      window.innerWidth - menuWidth - 8,
+    );
+    const preferredTop = selectionRect.top - 48;
+    const y =
+      preferredTop >= 8
+        ? preferredTop
+        : Math.min(selectionRect.bottom + 8, window.innerHeight - 48);
+
+    setSelectionSummaryMenu({
+      x,
+      y,
+      text: selectedText,
+    });
+  }, [editor]);
 
   const syncSearchState = () => {
     const state = getSearchState(editor);
@@ -255,17 +296,45 @@ export default function EditorContent({
       if (event.key === "Escape") closeMenu();
     };
 
-    document.addEventListener("click", closeMenu);
-    document.addEventListener("scroll", closeMenu, true);
+    window.document.addEventListener("click", closeMenu);
+    window.document.addEventListener("scroll", closeMenu, true);
     window.addEventListener("resize", closeMenu);
     window.addEventListener("keydown", handleKeyDown);
     return () => {
-      document.removeEventListener("click", closeMenu);
-      document.removeEventListener("scroll", closeMenu, true);
+      window.document.removeEventListener("click", closeMenu);
+      window.document.removeEventListener("scroll", closeMenu, true);
       window.removeEventListener("resize", closeMenu);
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [selectionSummaryMenu]);
+
+  useEffect(() => {
+    if (!onCreateNoteFromSelection || !editor) return;
+
+    let frame: number | null = null;
+    const scheduleUpdate = () => {
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+      }
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        updateSelectionSummaryMenu();
+      });
+    };
+
+    const editorSurface = editor.view.dom;
+    window.document.addEventListener("selectionchange", scheduleUpdate);
+    editorSurface.addEventListener("mouseup", scheduleUpdate);
+    editorSurface.addEventListener("keyup", scheduleUpdate);
+    return () => {
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+      }
+      window.document.removeEventListener("selectionchange", scheduleUpdate);
+      editorSurface.removeEventListener("mouseup", scheduleUpdate);
+      editorSurface.removeEventListener("keyup", scheduleUpdate);
+    };
+  }, [editor, onCreateNoteFromSelection, updateSelectionSummaryMenu]);
 
   const focusEditorFromWrap = (event: MouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
@@ -307,7 +376,7 @@ export default function EditorContent({
   };
 
   const handleCreateSelectionSummary = () => {
-    if (!selectionSummaryMenu || noteSummaryLoading) return;
+    if (!selectionSummaryMenu) return;
     const selectedText = selectionSummaryMenu.text;
     setSelectionSummaryMenu(null);
     void onCreateNoteFromSelection?.(selectedText);
@@ -317,45 +386,6 @@ export default function EditorContent({
     <main className="editor-panel">
       <div className="editor-content normal-editor">
         <section className="markdown-source">
-          <input
-            id={`title-${noteDetail.id}`}
-            className="editor-title-input"
-            value={title}
-            onChange={(event) => {
-              setTitle(event.target.value);
-              notesStore.actions.updateNoteTitleLocal(
-                noteDetail.id,
-                event.target.value.trim() || "未命名笔记",
-              );
-            }}
-            onBlur={saveNote}
-          />
-          {sourceNoteTitle && onOpenSourceNote && (
-            <div className="source-note-row">
-              <span className="source-note-label">来源文章</span>
-              <button
-                type="button"
-                className="source-note-button"
-                title={`跳转到「${sourceNoteTitle}」`}
-                onClick={onOpenSourceNote}
-              >
-                {sourceNoteTitle}
-              </button>
-            </div>
-          )}
-          {sourcePdfName && onOpenSourcePdf && (
-            <div className="source-note-row">
-              <span className="source-note-label">来源 PDF</span>
-              <button
-                type="button"
-                className="source-note-button"
-                title={`跳转到「${sourcePdfName}」`}
-                onClick={onOpenSourcePdf}
-              >
-                {sourcePdfName}
-              </button>
-            </div>
-          )}
           <div
             className="tiptap-editor-wrap"
             onClick={focusEditorFromWrap}
@@ -483,10 +513,9 @@ export default function EditorContent({
             <button
               type="button"
               className="selection-context-menu-item"
-              disabled={noteSummaryLoading}
               onClick={handleCreateSelectionSummary}
             >
-              {noteSummaryLoading ? "摘要中..." : "创建摘要笔记"}
+              创建摘要笔记
             </button>
           </div>
         )}
