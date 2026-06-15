@@ -23,6 +23,10 @@ import { isHtmlContent, markdownToHtml, slug } from "../utils/markdown";
 
 interface EditorContentProps {
   noteDetail: NoteDetail;
+  searchRequest?: {
+    query: string;
+    token: number;
+  } | null;
   onCreateNoteFromSelection?: (text: string) => void | Promise<void>;
 }
 
@@ -68,6 +72,7 @@ function scheduleHeadingIds(container: HTMLElement | null) {
 
 export default function EditorContent({
   noteDetail,
+  searchRequest,
   onCreateNoteFromSelection,
 }: EditorContentProps) {
   const [content, setContent] = useState(
@@ -265,6 +270,14 @@ export default function EditorContent({
     setEditorSearch(editor, "");
     editor?.chain().focus().run();
   };
+
+  useEffect(() => {
+    const query = searchRequest?.query.trim() ?? "";
+    if (!editor || !query) return;
+
+    setSearchVisible(true);
+    updateSearch(query);
+  }, [editor, searchRequest?.token]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {

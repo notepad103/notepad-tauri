@@ -407,6 +407,8 @@ export default function PdfReader({
   const textLayerRenderVersionRef = useRef(0);
   const scrollFrameRef = useRef<number | null>(null);
   const currentPageRef = useRef(currentPage);
+  const restoreTargetPageRef = useRef(Math.max(document.last_page || 1, 1));
+  const pendingInitialJumpRef = useRef(false);
   const jumpedDocumentIdRef = useRef<number | null>(null);
   const chunkRequestIdRef = useRef(0);
   const pdf =
@@ -555,6 +557,8 @@ export default function PdfReader({
       textLayerStopTimerRef.current = null;
     }
     const initialPage = Math.max(document.last_page || 1, 1);
+    restoreTargetPageRef.current = initialPage;
+    pendingInitialJumpRef.current = true;
     currentPageRef.current = initialPage;
     setCurrentPage(initialPage);
     jumpedDocumentIdRef.current = null;
@@ -967,7 +971,36 @@ export default function PdfReader({
     let canceled = false;
     let activeRenderTask: PdfRenderTask | null = null;
     let jumpFrame: number | null = null;
-    const targetPage = Math.min(Math.max(document.last_page || 1, 1), pageCount);
+    const targetPage = Math.min(
+      Math.max(restoreTargetPageRef.current, 1),
+      pageCount,
+    );
+
+    const scheduleInitialJump = () => {
+      if (jumpedDocumentIdRef.current === document.id) return;
+
+      const targetPageEl = canvasRefs.current[targetPage - 1]?.parentElement;
+      if (!targetPageEl) return;
+
+      jumpedDocumentIdRef.current = document.id;
+      jumpFrame = requestAnimationFrame(() => {
+        if (canceled) return;
+
+        currentPageRef.current = targetPage;
+        setCurrentPage(targetPage);
+        pendingInitialJumpRef.current = false;
+        targetPageEl.scrollIntoView({
+          block: "start",
+        });
+        if (textLayerStopTimerRef.current !== null) {
+          window.clearTimeout(textLayerStopTimerRef.current);
+        }
+        textLayerStopTimerRef.current = window.setTimeout(() => {
+          textLayerStopTimerRef.current = null;
+          renderVisibleTextLayers();
+        }, 220);
+      });
+    };
 
     const renderPages = async () => {
       const containerWidth = Math.max(
@@ -1028,25 +1061,17 @@ export default function PdfReader({
             activeRenderTask = null;
           }
         }
+
+        if (pageNumber === targetPage) {
+          scheduleInitialJump();
+        }
       }
     };
 
     renderPages()
       .then(() => {
-        if (canceled || jumpedDocumentIdRef.current === document.id) return;
-        jumpedDocumentIdRef.current = document.id;
-        jumpFrame = requestAnimationFrame(() => {
-          canvasRefs.current[targetPage - 1]?.parentElement?.scrollIntoView({
-            block: "start",
-          });
-          if (textLayerStopTimerRef.current !== null) {
-            window.clearTimeout(textLayerStopTimerRef.current);
-          }
-          textLayerStopTimerRef.current = window.setTimeout(() => {
-            textLayerStopTimerRef.current = null;
-            renderVisibleTextLayers();
-          }, 220);
-        });
+        if (canceled) return;
+        scheduleInitialJump();
       })
       .catch((err) => {
         if (!canceled) setError(err instanceof Error ? err.message : String(err));
@@ -1068,6 +1093,8 @@ export default function PdfReader({
 
     const syncCurrentPage = () => {
       scrollFrameRef.current = null;
+      if (pendingInitialJumpRef.current) return;
+
       const containerRect = pagesEl.getBoundingClientRect();
       const anchorY = containerRect.top + containerRect.height * 0.35;
       let nearestPage = 1;

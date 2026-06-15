@@ -20,6 +20,7 @@ import WebSummaryDialog from "./components/WebSummaryDialog";
 import TermExplainDialog from "./components/TermExplainDialog";
 import SettingsPage from "./components/SettingsPage";
 import PdfReader from "./components/PdfReader";
+import GlobalSearchDialog from "./components/GlobalSearchDialog";
 import { AppActionsProvider } from "./context/AppActionsContext";
 import { usePdfDocuments } from "./hooks/usePdfDocuments";
 import { useNoteAi } from "./hooks/useNoteAi";
@@ -62,6 +63,12 @@ function getNotesBySelectedGroup(
 function App() {
   const [selectedNoteId, setSelectedNoteId] = useState("");
   const [webSummaryOpen, setWebSummaryOpen] = useState(false);
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  const [editorSearchRequest, setEditorSearchRequest] = useState<{
+    noteId: string;
+    query: string;
+    token: number;
+  } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsClosing, setSettingsClosing] = useState(false);
   const [termSidebarOpen, setTermSidebarOpen] = useState(false);
@@ -169,6 +176,18 @@ function App() {
     await syncPdfDocumentForNote(detail);
   };
 
+  const handleSelectGlobalSearchResult = async (id: string, query: string) => {
+    setGlobalSearchOpen(false);
+    setTermSidebarOpen(false);
+    resetTermExplainRef.current();
+    await handleSelectNote(id);
+    setEditorSearchRequest({
+      noteId: id,
+      query,
+      token: Date.now(),
+    });
+  };
+
   const handleOpenSourceNote = () => {
     if (!sourceNoteId) return;
     handleSelectNote(sourceNoteId);
@@ -213,6 +232,23 @@ function App() {
 
     setSelectedNoteId(firstNote.id);
   }, [customList, notesState.list, selectedId, selectedNoteId]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        event.shiftKey &&
+        event.key.toLowerCase() === "f"
+      ) {
+        event.preventDefault();
+        closeSettings();
+        setGlobalSearchOpen(true);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [settingsOpen, settingsClosing]);
 
   useEffect(() => {
     sidebarStore.actions.setFixedList(
@@ -274,6 +310,10 @@ function App() {
             noteSummaryLoading={noteAi.noteSummaryLoading}
             pdfLoading={pdfLoading}
             pdfActive={Boolean(pdfDocument)}
+            onOpenGlobalSearch={() => {
+              closeSettings();
+              setGlobalSearchOpen(true);
+            }}
             onCreateNoteSummary={noteAi.createNoteSummary}
             onExplainTerms={noteAi.explainTerms}
           />
@@ -324,6 +364,11 @@ function App() {
                 <EditorContent
                   key={noteDetail.id}
                   noteDetail={noteDetail}
+                  searchRequest={
+                    editorSearchRequest?.noteId === noteDetail.id
+                      ? editorSearchRequest
+                      : null
+                  }
                   onCreateNoteFromSelection={noteAi.createNoteFromSelection}
                 />
                 <TocPanel
@@ -367,6 +412,14 @@ function App() {
           onClose={() => {
             setWebSummaryOpen(false);
           }}
+        />
+        <GlobalSearchDialog
+          open={globalSearchOpen}
+          notes={notesState.list}
+          categories={customList}
+          selectedNoteId={selectedNoteId}
+          onClose={() => setGlobalSearchOpen(false)}
+          onSelectNote={handleSelectGlobalSearchResult}
         />
         <TermExplainDialog {...noteAi.termDialog} />
       </div>

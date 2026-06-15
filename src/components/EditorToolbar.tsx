@@ -12,6 +12,7 @@ interface EditorToolbarProps {
   noteSummaryLoading: boolean;
   pdfLoading: boolean;
   pdfActive: boolean;
+  onOpenGlobalSearch: () => void;
   onCreateNoteSummary: () => void | Promise<void>;
   onExplainTerms: () => void | Promise<void>;
 }
@@ -23,6 +24,7 @@ export default function EditorToolbar({
   noteSummaryLoading,
   pdfLoading,
   pdfActive,
+  onOpenGlobalSearch,
   onCreateNoteSummary,
   onExplainTerms,
 }: EditorToolbarProps) {
@@ -99,6 +101,14 @@ export default function EditorToolbar({
 
   return (
     <header className="editor-toolbar">
+      <button
+        type="button"
+        className="toolbar-btn"
+        title="全局搜索 Cmd/Ctrl + Shift + F"
+        onClick={onOpenGlobalSearch}
+      >
+        全局搜索
+      </button>
       <div className="editor-toolbar-spacer" />
       {hasSelectedNote && (
         <>
