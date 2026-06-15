@@ -278,6 +278,61 @@ pub fn get_db_path() -> Result<String, String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
+#[tauri::command]
+pub fn export_local_data(target_path: String) -> Result<String, String> {
+    let clean_path = target_path.trim();
+    if clean_path.is_empty() {
+        return Err("请选择导出位置".to_string());
+    }
+
+    let db_path = app_data_dir()?.join(SQLITE_NAME);
+    let target_path = PathBuf::from(clean_path);
+    if target_path == db_path
+        || target_path
+            .canonicalize()
+            .ok()
+            .is_some_and(|path| path == db_path)
+    {
+        return Err("导出位置不能是当前数据库文件".to_string());
+    }
+
+    if let Some(parent) = target_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("创建导出目录失败：{err}"))?;
+    }
+
+    if target_path.is_dir() {
+        return Err("导出位置不能是文件夹".to_string());
+    }
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| err.to_string())?
+        .as_secs();
+    let file_name = target_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("notepad-data.db");
+    let temp_path = target_path.with_file_name(format!("{file_name}.{timestamp}.tmp"));
+    let temp_path_value = temp_path.to_string_lossy().into_owned();
+
+    {
+        let conn = DB.lock().unwrap();
+        conn.execute("VACUUM INTO ?1", [&temp_path_value])
+            .map_err(|err| format!("导出数据失败：{err}"))?;
+    }
+
+    if target_path.exists() {
+        fs::remove_file(&target_path).map_err(|err| format!("覆盖导出文件失败：{err}"))?;
+    }
+
+    fs::rename(&temp_path, &target_path).map_err(|err| {
+        let _ = fs::remove_file(&temp_path);
+        format!("保存导出文件失败：{err}")
+    })?;
+
+    Ok(target_path.to_string_lossy().into_owned())
+}
+
 fn app_data_dir() -> Result<PathBuf, String> {
     std::env::current_dir().map_err(|e| e.to_string())
 }

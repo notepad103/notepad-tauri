@@ -2,6 +2,7 @@ mod ai;
 #[path = "../base/mod.rs"]
 mod base;
 mod pdf_summary;
+mod pdf_vector;
 mod webpage;
 
 use std::fs;
@@ -17,6 +18,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             fs::create_dir_all(&app_data_dir)?;
             std::env::set_current_dir(app_data_dir)?;
             base::sql::init_db()?;
+            pdf_vector::init_pdf_vector_tables()?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -29,6 +31,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             ai::save_deepseek_api_key,
             ai::save_deepseek_model,
             base::sql::add_groups,
+            base::sql::export_local_data,
             base::sql::get_db_path,
             base::sql::get_groups,
             base::sql::get_notes,
@@ -51,6 +54,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             base::sql::get_pdf_outline_items,
             base::sql::save_pdf_outline_items,
             base::sql::delete_pdf_outline_items,
+            pdf_vector::ensure_pdf_vector_index,
+            pdf_vector::get_pdf_vector_index_state,
+            pdf_vector::search_pdf_vectors,
+            pdf_vector::answer_pdf_vector_search,
+            pdf_vector::answer_pdf_vector_search_stream,
             pdf_summary::summarize_pdf_document
         ])
         .run(tauri::generate_context!())

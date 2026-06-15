@@ -9,6 +9,7 @@ import {
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.mjs?url";
+import PdfRagController from "./PdfRagController";
 import TermToggleButton from "./TermToggleButton";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
@@ -710,6 +711,51 @@ export default function PdfReader({
     chunkStatus === "saving" ||
     chunkStatus === "summarizing";
 
+  const ensurePdfTextChunks = useCallback(
+    async (
+      activePdf: pdfjsLib.PDFDocumentProxy,
+      options: {
+        isStaleRequest: () => boolean;
+        onProgress: (message: string) => void;
+      },
+    ): Promise<PdfChunk[] | null> => {
+      options.onProgress("检查文本切片");
+      const existingChunks = await invoke<PdfChunk[]>("get_pdf_chunks", {
+        pdfDocumentId: document.id,
+      });
+      if (options.isStaleRequest()) return null;
+
+      if (existingChunks.length > 0) {
+        options.onProgress(`${existingChunks.length} 个文本切片`);
+        return existingChunks;
+      }
+
+      const pageTexts = await extractPdfPageTexts(activePdf, (page, total) => {
+        if (!options.isStaleRequest()) {
+          options.onProgress(`提取文本 ${page} / ${total}`);
+        }
+      });
+      if (options.isStaleRequest()) return null;
+
+      const chunks = buildPdfChunks(pageTexts);
+      if (!chunks.length) {
+        options.onProgress("未提取到可分析文本");
+        return [];
+      }
+
+      options.onProgress(`保存 ${chunks.length} 个文本切片`);
+      const savedChunks = await invoke<PdfChunk[]>("save_pdf_chunks", {
+        pdfDocumentId: document.id,
+        chunks,
+      });
+      if (options.isStaleRequest()) return null;
+
+      options.onProgress(`${savedChunks.length} 个文本切片`);
+      return savedChunks;
+    },
+    [document.id],
+  );
+
   const handleAiSummaryClick = useCallback(async () => {
     if (!pdf || chunkBusy) return;
 
@@ -760,42 +806,24 @@ export default function PdfReader({
       }
 
       setChunkStatus("checking");
-      setChunkMessage("检查文本切片");
-
-      const existingChunks = await invoke<PdfChunk[]>("get_pdf_chunks", {
-        pdfDocumentId: document.id,
-      });
-      if (isStaleRequest()) return;
-
-      if (existingChunks.length > 0) {
-        setChunkStatus("ready");
-        setChunkMessage(`${existingChunks.length} 个文本切片`);
-      } else {
-        setChunkStatus("extracting");
-        const pageTexts = await extractPdfPageTexts(pdf, (page, total) => {
-          if (!isStaleRequest()) {
-            setChunkMessage(`提取文本 ${page} / ${total}`);
+      const chunks = await ensurePdfTextChunks(pdf, {
+        isStaleRequest,
+        onProgress: (message) => {
+          if (message.startsWith("提取文本")) {
+            setChunkStatus("extracting");
+          } else if (message.startsWith("保存")) {
+            setChunkStatus("saving");
+          } else {
+            setChunkStatus("checking");
           }
-        });
-        if (isStaleRequest()) return;
-
-        const chunks = buildPdfChunks(pageTexts);
-        if (!chunks.length) {
-          setChunkStatus("empty");
-          setChunkMessage("未提取到可总结文本");
-          return;
-        }
-
-        setChunkStatus("saving");
-        setChunkMessage(`保存 ${chunks.length} 个文本切片`);
-        const savedChunks = await invoke<PdfChunk[]>("save_pdf_chunks", {
-          pdfDocumentId: document.id,
-          chunks,
-        });
-        if (isStaleRequest()) return;
-
-        setChunkStatus("ready");
-        setChunkMessage(`${savedChunks.length} 个文本切片`);
+          setChunkMessage(message);
+        },
+      });
+      if (isStaleRequest() || chunks === null) return;
+      if (!chunks.length) {
+        setChunkStatus("empty");
+        setChunkMessage("未提取到可总结文本");
+        return;
       }
 
       setChunkStatus("summarizing");
@@ -835,7 +863,7 @@ export default function PdfReader({
       setSummaryProgress(null);
       setChunkMessage(err instanceof Error ? err.message : String(err));
     }
-  }, [chunkBusy, document.id, onSummaryCreated, pdf]);
+  }, [chunkBusy, document.id, ensurePdfTextChunks, onSummaryCreated, pdf]);
 
   const hideTextLayers = useCallback(() => {
     textLayerRefs.current.forEach((textLayerDiv) => {
@@ -1149,6 +1177,14 @@ export default function PdfReader({
           >
             {chunkBusy ? "处理中..." : "AI 总结"}
           </button>
+          <PdfRagController
+            chunkBusy={chunkBusy}
+            documentId={document.id}
+            documentName={document.name}
+            ensurePdfTextChunks={ensurePdfTextChunks}
+            onJumpToPage={jumpToPage}
+            pdf={pdf}
+          />
           {chunkStatus !== "idle" && (
             <div
               className={`pdf-reader-chunk-status pdf-reader-chunk-status-${chunkStatus}`}

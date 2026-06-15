@@ -27,3 +27,5 @@ rusqlite = { version = "0.31.0", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 scraper = "0.19"
 futures-util = "0.3"
+fastembed = { version = "5.16.1", default-features = false, features = ["ort-download-binaries-rustls-tls", "hf-hub-rustls-tls"] }
+sqlite-vec = "0.1.6"

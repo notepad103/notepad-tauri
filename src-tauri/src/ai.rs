@@ -235,7 +235,7 @@ impl AiClient {
             .ok_or_else(|| "DeepSeek 没有返回内容".to_string())
     }
 
-    async fn chat_text_stream(
+    pub(crate) async fn chat_text_stream(
         &self,
         messages: Vec<AiMessage>,
         temperature: f32,

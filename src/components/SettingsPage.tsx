@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { save as saveFile } from "@tauri-apps/plugin-dialog";
 
 interface AiSettings {
   model: string;
@@ -12,25 +13,21 @@ interface SettingsPageProps {
   onClose: () => void;
 }
 
-async function copyText(value: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value);
-    return;
-  }
+function exportFileName(): string {
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const date = [
+    now.getFullYear(),
+    pad(now.getMonth() + 1),
+    pad(now.getDate()),
+  ].join("");
+  const time = [
+    pad(now.getHours()),
+    pad(now.getMinutes()),
+    pad(now.getSeconds()),
+  ].join("");
 
-  const textarea = document.createElement("textarea");
-  textarea.value = value;
-  textarea.setAttribute("readonly", "");
-  textarea.style.position = "fixed";
-  textarea.style.opacity = "0";
-  document.body.appendChild(textarea);
-  textarea.select();
-
-  try {
-    document.execCommand("copy");
-  } finally {
-    document.body.removeChild(textarea);
-  }
+  return `notepad-data-${date}-${time}.db`;
 }
 
 export default function SettingsPage({ onClose }: SettingsPageProps) {
@@ -41,7 +38,7 @@ export default function SettingsPage({ onClose }: SettingsPageProps) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [modelSaving, setModelSaving] = useState(false);
-  const [copyStatus, setCopyStatus] = useState("");
+  const [exporting, setExporting] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
@@ -68,13 +65,12 @@ export default function SettingsPage({ onClose }: SettingsPageProps) {
   }, []);
 
   useEffect(() => {
-    if (!copyStatus && !message) return;
+    if (!message) return;
     const timer = window.setTimeout(() => {
-      setCopyStatus("");
       setMessage("");
     }, 1800);
     return () => window.clearTimeout(timer);
-  }, [copyStatus, message]);
+  }, [message]);
 
   const handleSaveApiKey = async () => {
     if (!apiKey.trim() || saving) return;
@@ -114,14 +110,27 @@ export default function SettingsPage({ onClose }: SettingsPageProps) {
     }
   };
 
-  const handleCopyDbPath = async () => {
-    if (!dbPath) return;
+  const handleExportData = async () => {
+    if (exporting) return;
+    setError("");
+    setMessage("");
+
     try {
-      await copyText(dbPath);
-      setCopyStatus("已复制");
+      const targetPath = await saveFile({
+        defaultPath: exportFileName(),
+        filters: [{ name: "SQLite 数据库", extensions: ["db"] }],
+      });
+      if (!targetPath) return;
+
+      setExporting(true);
+      const exportedPath = await invoke<string>("export_local_data", {
+        targetPath,
+      });
+      setMessage(`已导出：${exportedPath}`);
     } catch (err) {
-      console.error(err);
-      setCopyStatus("复制失败");
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -241,20 +250,20 @@ export default function SettingsPage({ onClose }: SettingsPageProps) {
                 <button
                   type="button"
                   className="toolbar-btn"
-                  disabled={!dbPath}
+                  disabled={!dbPath || exporting}
                   onClick={() => {
-                    void handleCopyDbPath();
+                    void handleExportData();
                   }}
                 >
-                  复制路径
+                  {exporting ? "导出中..." : "导出数据"}
                 </button>
               </div>
             </div>
           </section>
 
-          {(message || copyStatus || error) && (
+          {(message || error) && (
             <p className={error ? "settings-error" : "settings-message"}>
-              {error || message || copyStatus}
+              {error || message}
             </p>
           )}
         </div>
