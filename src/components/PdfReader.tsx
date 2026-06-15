@@ -138,6 +138,8 @@ type PdfOutlineNode = NonNullable<
 const TARGET_CHUNK_CHARS = 5_000;
 const MIN_CHUNK_CHARS = 3_000;
 const MAX_CHUNK_CHARS = 8_000;
+const RENDER_WINDOW_RANGE = 10;
+const RENDER_WINDOW_EDGE_THRESHOLD = 5;
 
 function formatFileSize(size: number): string {
   if (size < 1024) return `${size} B`;
@@ -243,6 +245,35 @@ function buildPdfChunks(pageTexts: PdfPageText[]): PdfChunkInput[] {
 
   flushChunk();
   return chunks;
+}
+
+function getPdfRenderWindow(centerPage: number, pageCount: number) {
+  const center = Math.min(Math.max(centerPage, 1), Math.max(pageCount, 1));
+  return {
+    start: Math.max(center - RENDER_WINDOW_RANGE, 1),
+    end: Math.min(center + RENDER_WINDOW_RANGE, pageCount),
+  };
+}
+
+function buildPdfRenderWindowOrder(centerPage: number, pageCount: number): number[] {
+  const pages: number[] = [];
+  const seen = new Set<number>();
+  const center = Math.min(Math.max(centerPage, 1), Math.max(pageCount, 1));
+  const { start, end } = getPdfRenderWindow(centerPage, pageCount);
+  const addPage = (pageNumber: number) => {
+    if (pageNumber < start || pageNumber > end || seen.has(pageNumber)) {
+      return;
+    }
+    seen.add(pageNumber);
+    pages.push(pageNumber);
+  };
+
+  for (let offset = 0; offset <= RENDER_WINDOW_RANGE; offset += 1) {
+    addPage(center - offset);
+    addPage(center + offset);
+  }
+
+  return pages;
 }
 
 function serializeOutlineDest(dest: PdfOutlineNode["dest"]): string | null {
@@ -401,6 +432,13 @@ export default function PdfReader({
   const canvasRefs = useRef<(HTMLCanvasElement | null)[]>([]);
   const textLayerRefs = useRef<(HTMLDivElement | null)[]>([]);
   const pageRenderMetricsRef = useRef<(PdfPageRenderMetric | null)[]>([]);
+  const activeCanvasRenderTasksRef = useRef<Map<number, PdfRenderTask>>(new Map());
+  const renderedCanvasPagesRef = useRef<Set<number>>(new Set());
+  const queuedCanvasPagesRef = useRef<Set<number>>(new Set());
+  const canvasRenderQueueRef = useRef<number[]>([]);
+  const canvasRenderWorkerRunningRef = useRef(false);
+  const canvasRenderVersionRef = useRef(0);
+  const activeRenderWindowRef = useRef(getPdfRenderWindow(currentPage, pageCount));
   const activeTextLayersRef = useRef<Map<number, PdfTextLayer>>(new Map());
   const renderedTextLayerPagesRef = useRef<Set<number>>(new Set());
   const textLayerStopTimerRef = useRef<number | null>(null);
@@ -408,7 +446,10 @@ export default function PdfReader({
   const scrollFrameRef = useRef<number | null>(null);
   const currentPageRef = useRef(currentPage);
   const restoreTargetPageRef = useRef(Math.max(document.last_page || 1, 1));
+  const pendingRenderedJumpPageRef = useRef<number | null>(null);
+  const pendingRenderedJumpBehaviorRef = useRef<ScrollBehavior>("auto");
   const pendingInitialJumpRef = useRef(false);
+  const initialJumpFrameRef = useRef<number | null>(null);
   const jumpedDocumentIdRef = useRef<number | null>(null);
   const chunkRequestIdRef = useRef(0);
   const pdf =
@@ -548,6 +589,13 @@ export default function PdfReader({
     canvasRefs.current = [];
     textLayerRefs.current = [];
     pageRenderMetricsRef.current = [];
+    activeCanvasRenderTasksRef.current.forEach((renderTask) => renderTask.cancel());
+    activeCanvasRenderTasksRef.current.clear();
+    renderedCanvasPagesRef.current.clear();
+    queuedCanvasPagesRef.current.clear();
+    canvasRenderQueueRef.current = [];
+    canvasRenderWorkerRunningRef.current = false;
+    canvasRenderVersionRef.current += 1;
     activeTextLayersRef.current.forEach((textLayer) => textLayer.cancel());
     activeTextLayersRef.current.clear();
     renderedTextLayerPagesRef.current.clear();
@@ -556,8 +604,18 @@ export default function PdfReader({
       window.clearTimeout(textLayerStopTimerRef.current);
       textLayerStopTimerRef.current = null;
     }
+    if (initialJumpFrameRef.current !== null) {
+      window.cancelAnimationFrame(initialJumpFrameRef.current);
+      initialJumpFrameRef.current = null;
+    }
     const initialPage = Math.max(document.last_page || 1, 1);
     restoreTargetPageRef.current = initialPage;
+    pendingRenderedJumpPageRef.current = initialPage;
+    pendingRenderedJumpBehaviorRef.current = "auto";
+    activeRenderWindowRef.current = getPdfRenderWindow(
+      initialPage,
+      document.page_count || 1,
+    );
     pendingInitialJumpRef.current = true;
     currentPageRef.current = initialPage;
     setCurrentPage(initialPage);
@@ -591,11 +649,20 @@ export default function PdfReader({
 
     return () => {
       canceled = true;
+      activeCanvasRenderTasksRef.current.forEach((renderTask) => renderTask.cancel());
+      activeCanvasRenderTasksRef.current.clear();
+      queuedCanvasPagesRef.current.clear();
+      canvasRenderQueueRef.current = [];
+      canvasRenderWorkerRunningRef.current = false;
       activeTextLayersRef.current.forEach((textLayer) => textLayer.cancel());
       activeTextLayersRef.current.clear();
       if (textLayerStopTimerRef.current !== null) {
         window.clearTimeout(textLayerStopTimerRef.current);
         textLayerStopTimerRef.current = null;
+      }
+      if (initialJumpFrameRef.current !== null) {
+        window.cancelAnimationFrame(initialJumpFrameRef.current);
+        initialJumpFrameRef.current = null;
       }
       if (!publishedPdf) {
         void task?.destroy();
@@ -965,32 +1032,39 @@ export default function PdfReader({
     });
   }, [getVisibleTextLayerPages, renderTextLayerPage]);
 
-  useEffect(() => {
-    if (!pdf || !pageCount) return;
+  const scheduleRenderedPageJump = useCallback(
+    (
+      page: number,
+      options: {
+        behavior?: ScrollBehavior;
+        completeInitialJump?: boolean;
+      } = {},
+    ) => {
+      if (!pageCount) return;
 
-    let canceled = false;
-    let activeRenderTask: PdfRenderTask | null = null;
-    let jumpFrame: number | null = null;
-    const targetPage = Math.min(
-      Math.max(restoreTargetPageRef.current, 1),
-      pageCount,
-    );
-
-    const scheduleInitialJump = () => {
-      if (jumpedDocumentIdRef.current === document.id) return;
-
+      const targetPage = Math.min(Math.max(page, 1), pageCount);
       const targetPageEl = canvasRefs.current[targetPage - 1]?.parentElement;
       if (!targetPageEl) return;
 
-      jumpedDocumentIdRef.current = document.id;
-      jumpFrame = requestAnimationFrame(() => {
-        if (canceled) return;
+      if (options.completeInitialJump) {
+        jumpedDocumentIdRef.current = document.id;
+      }
+      pendingRenderedJumpPageRef.current = null;
+      if (initialJumpFrameRef.current !== null) {
+        window.cancelAnimationFrame(initialJumpFrameRef.current);
+      }
+      initialJumpFrameRef.current = requestAnimationFrame(() => {
+        initialJumpFrameRef.current = null;
+        if (loadedPdfState?.documentId !== document.id) return;
 
         currentPageRef.current = targetPage;
         setCurrentPage(targetPage);
-        pendingInitialJumpRef.current = false;
+        if (options.completeInitialJump) {
+          pendingInitialJumpRef.current = false;
+        }
         targetPageEl.scrollIntoView({
           block: "start",
+          behavior: options.behavior,
         });
         if (textLayerStopTimerRef.current !== null) {
           window.clearTimeout(textLayerStopTimerRef.current);
@@ -1000,92 +1074,212 @@ export default function PdfReader({
           renderVisibleTextLayers();
         }, 220);
       });
-    };
+    },
+    [document.id, loadedPdfState?.documentId, pageCount, renderVisibleTextLayers],
+  );
 
-    const renderPages = async () => {
+  const renderPdfCanvasPage = useCallback(
+    async (pageNumber: number, version: number) => {
+      if (
+        !pdf ||
+        !pageCount ||
+        version !== canvasRenderVersionRef.current ||
+        renderedCanvasPagesRef.current.has(pageNumber)
+      ) {
+        return;
+      }
+
+      let canvas = canvasRefs.current[pageNumber - 1];
+      if (!canvas) {
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => resolve());
+        });
+        canvas = canvasRefs.current[pageNumber - 1];
+      }
+      if (!canvas || version !== canvasRenderVersionRef.current) return;
+
+      const page = await pdf.getPage(pageNumber);
+      if (version !== canvasRenderVersionRef.current) return;
+
       const containerWidth = Math.max(
         (pagesRef.current?.clientWidth ?? 860) - 44,
         320,
       );
+      const baseViewport = page.getViewport({ scale: 1 });
+      const scale = Math.min(containerWidth / baseViewport.width, 1.6);
+      const viewport = page.getViewport({ scale });
+      const context = canvas.getContext("2d");
+      if (!context) return;
 
-      for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
-        if (canceled) return;
-        let canvas = canvasRefs.current[pageNumber - 1];
-        if (!canvas) {
-          await new Promise<void>((resolve) => {
-            requestAnimationFrame(() => resolve());
-          });
-          canvas = canvasRefs.current[pageNumber - 1];
-        }
-        if (!canvas) continue;
+      const pageEl = canvas.parentElement;
+      const pagesEl = pagesRef.current;
+      const shouldPreserveScroll = Boolean(
+        pageEl &&
+          pagesEl &&
+          !pendingInitialJumpRef.current &&
+          pageEl.getBoundingClientRect().bottom <=
+            pagesEl.getBoundingClientRect().top,
+      );
+      const previousHeight = pageEl?.getBoundingClientRect().height ?? 0;
 
-        const page = await pdf.getPage(pageNumber);
-        if (canceled) return;
+      canvas.width = Math.floor(viewport.width);
+      canvas.height = Math.floor(viewport.height);
+      canvas.style.width = `${Math.floor(viewport.width)}px`;
+      canvas.style.height = `${Math.floor(viewport.height)}px`;
+      pageRenderMetricsRef.current[pageNumber - 1] = {
+        width: Math.floor(viewport.width),
+        height: Math.floor(viewport.height),
+        scale,
+      };
+      if (pageEl) {
+        pageEl.style.setProperty("--scale-factor", `${scale}`);
+        pageEl.style.setProperty("--user-unit", "1");
+        pageEl.style.setProperty("--total-scale-factor", `${scale}`);
+        pageEl.style.setProperty("--scale-round-x", "1px");
+        pageEl.style.setProperty("--scale-round-y", "1px");
+      }
+      if (shouldPreserveScroll && pagesEl && pageEl) {
+        const nextHeight = pageEl.getBoundingClientRect().height;
+        pagesEl.scrollTop += nextHeight - previousHeight;
+      }
 
-        const baseViewport = page.getViewport({ scale: 1 });
-        const scale = Math.min(containerWidth / baseViewport.width, 1.6);
-        const viewport = page.getViewport({ scale });
-        const context = canvas.getContext("2d");
-        if (!context) continue;
-
-        canvas.width = Math.floor(viewport.width);
-        canvas.height = Math.floor(viewport.height);
-        canvas.style.width = `${Math.floor(viewport.width)}px`;
-        canvas.style.height = `${Math.floor(viewport.height)}px`;
-        pageRenderMetricsRef.current[pageNumber - 1] = {
-          width: Math.floor(viewport.width),
-          height: Math.floor(viewport.height),
-          scale,
-        };
-        const pageEl = canvas.parentElement;
-        if (pageEl) {
-          pageEl.style.setProperty("--scale-factor", `${scale}`);
-          pageEl.style.setProperty("--user-unit", "1");
-          pageEl.style.setProperty("--total-scale-factor", `${scale}`);
-          pageEl.style.setProperty("--scale-round-x", "1px");
-          pageEl.style.setProperty("--scale-round-y", "1px");
-        }
-
-        const renderTask = page.render({ canvas, canvasContext: context, viewport });
-        activeRenderTask = renderTask;
-
-        try {
-          await renderTask.promise;
-        } catch (err) {
-          if (canceled || isPdfRenderCanceledError(err)) {
-            return;
-          }
-          throw err;
-        } finally {
-          if (activeRenderTask === renderTask) {
-            activeRenderTask = null;
-          }
-        }
-
-        if (pageNumber === targetPage) {
-          scheduleInitialJump();
+      const renderTask = page.render({ canvas, canvasContext: context, viewport });
+      activeCanvasRenderTasksRef.current.set(pageNumber, renderTask);
+      try {
+        await renderTask.promise;
+      } catch (err) {
+        if (isPdfRenderCanceledError(err)) return;
+        throw err;
+      } finally {
+        if (activeCanvasRenderTasksRef.current.get(pageNumber) === renderTask) {
+          activeCanvasRenderTasksRef.current.delete(pageNumber);
         }
       }
-    };
 
-    renderPages()
-      .then(() => {
-        if (canceled) return;
-        scheduleInitialJump();
-      })
-      .catch((err) => {
-        if (!canceled) setError(err instanceof Error ? err.message : String(err));
+      if (version !== canvasRenderVersionRef.current) return;
+      renderedCanvasPagesRef.current.add(pageNumber);
+      const restoreTargetPage = Math.min(
+        Math.max(restoreTargetPageRef.current, 1),
+        pageCount,
+      );
+      if (
+        pendingRenderedJumpPageRef.current === pageNumber ||
+        (pendingInitialJumpRef.current && pageNumber === restoreTargetPage)
+      ) {
+        scheduleRenderedPageJump(pageNumber, {
+          behavior: pendingRenderedJumpBehaviorRef.current,
+          completeInitialJump:
+            pendingInitialJumpRef.current && pageNumber === restoreTargetPage,
+        });
+      }
+    },
+    [pageCount, pdf, scheduleRenderedPageJump],
+  );
+
+  const enqueuePdfRenderWindow = useCallback(
+    (centerPage: number, activateWindow = true) => {
+      if (!pdf || !pageCount) return;
+
+      const version = canvasRenderVersionRef.current;
+      if (activateWindow) {
+        activeRenderWindowRef.current = getPdfRenderWindow(centerPage, pageCount);
+      }
+
+      buildPdfRenderWindowOrder(centerPage, pageCount).forEach((pageNumber) => {
+        if (
+          renderedCanvasPagesRef.current.has(pageNumber) ||
+          queuedCanvasPagesRef.current.has(pageNumber)
+        ) {
+          return;
+        }
+        queuedCanvasPagesRef.current.add(pageNumber);
+        canvasRenderQueueRef.current.push(pageNumber);
       });
 
-    return () => {
-      canceled = true;
-      activeRenderTask?.cancel();
-      activeRenderTask = null;
-      if (jumpFrame !== null) {
-        cancelAnimationFrame(jumpFrame);
+      if (canvasRenderWorkerRunningRef.current) return;
+      canvasRenderWorkerRunningRef.current = true;
+
+      void (async () => {
+        while (
+          canvasRenderQueueRef.current.length > 0 &&
+          version === canvasRenderVersionRef.current
+        ) {
+          const pageNumber = canvasRenderQueueRef.current.shift();
+          if (!pageNumber) continue;
+          queuedCanvasPagesRef.current.delete(pageNumber);
+          if (renderedCanvasPagesRef.current.has(pageNumber)) continue;
+          await renderPdfCanvasPage(pageNumber, version);
+        }
+      })()
+        .catch((err) => {
+          if (!isPdfRenderCanceledError(err)) {
+            setError(err instanceof Error ? err.message : String(err));
+          }
+        })
+        .finally(() => {
+          if (version !== canvasRenderVersionRef.current) return;
+
+          canvasRenderWorkerRunningRef.current = false;
+          if (canvasRenderQueueRef.current.length > 0) {
+            enqueuePdfRenderWindow(currentPageRef.current, false);
+          }
+        });
+    },
+    [pageCount, pdf, renderPdfCanvasPage],
+  );
+
+  const restartPdfRenderWindow = useCallback(
+    (centerPage: number, behavior: ScrollBehavior = "auto") => {
+      if (!pdf || !pageCount) return;
+
+      const targetPage = Math.min(Math.max(centerPage, 1), pageCount);
+      activeCanvasRenderTasksRef.current.forEach((renderTask) => renderTask.cancel());
+      activeCanvasRenderTasksRef.current.clear();
+      queuedCanvasPagesRef.current.clear();
+      canvasRenderQueueRef.current = [];
+      canvasRenderWorkerRunningRef.current = false;
+      canvasRenderVersionRef.current += 1;
+      activeRenderWindowRef.current = getPdfRenderWindow(targetPage, pageCount);
+      pendingInitialJumpRef.current = false;
+      jumpedDocumentIdRef.current = document.id;
+      pendingRenderedJumpPageRef.current = targetPage;
+      pendingRenderedJumpBehaviorRef.current = behavior;
+
+      enqueuePdfRenderWindow(targetPage);
+      if (renderedCanvasPagesRef.current.has(targetPage)) {
+        scheduleRenderedPageJump(targetPage, { behavior });
       }
-    };
-  }, [document.id, pageCount, pdf, renderVisibleTextLayers]);
+    },
+    [document.id, enqueuePdfRenderWindow, pageCount, pdf, scheduleRenderedPageJump],
+  );
+
+  useEffect(() => {
+    if (!pdf || !pageCount) return;
+
+    const targetPage = Math.min(
+      Math.max(restoreTargetPageRef.current, 1),
+      pageCount,
+    );
+    activeRenderWindowRef.current = getPdfRenderWindow(targetPage, pageCount);
+    enqueuePdfRenderWindow(targetPage);
+  }, [enqueuePdfRenderWindow, pageCount, pdf]);
+
+  const enqueueRenderWindowNearEdge = useCallback(
+    (pageNumber: number) => {
+      if (!pageCount) return;
+
+      const { start, end } = activeRenderWindowRef.current;
+      const shouldRenderNextWindow =
+        !renderedCanvasPagesRef.current.has(pageNumber) ||
+        pageNumber <= start + RENDER_WINDOW_EDGE_THRESHOLD ||
+        pageNumber >= end - RENDER_WINDOW_EDGE_THRESHOLD;
+
+      if (shouldRenderNextWindow) {
+        enqueuePdfRenderWindow(pageNumber);
+      }
+    },
+    [enqueuePdfRenderWindow, pageCount],
+  );
 
   useEffect(() => {
     const pagesEl = pagesRef.current;
@@ -1093,7 +1287,9 @@ export default function PdfReader({
 
     const syncCurrentPage = () => {
       scrollFrameRef.current = null;
-      if (pendingInitialJumpRef.current) return;
+      if (pendingInitialJumpRef.current || pendingRenderedJumpPageRef.current !== null) {
+        return;
+      }
 
       const containerRect = pagesEl.getBoundingClientRect();
       const anchorY = containerRect.top + containerRect.height * 0.35;
@@ -1114,6 +1310,7 @@ export default function PdfReader({
         }
       });
 
+      enqueueRenderWindowNearEdge(nearestPage);
       if (currentPageRef.current === nearestPage) return;
       currentPageRef.current = nearestPage;
       setCurrentPage(nearestPage);
@@ -1148,6 +1345,7 @@ export default function PdfReader({
     };
   }, [
     cancelActiveTextLayerRender,
+    enqueueRenderWindowNearEdge,
     hideTextLayers,
     onReadingChange,
     pageCount,
@@ -1164,10 +1362,7 @@ export default function PdfReader({
 
   const jumpToPage = (page: number) => {
     const targetPage = Math.min(Math.max(page, 1), Math.max(pageCount, 1));
-    canvasRefs.current[targetPage - 1]?.parentElement?.scrollIntoView({
-      block: "start",
-      behavior: "smooth",
-    });
+    restartPdfRenderWindow(targetPage, "smooth");
     currentPageRef.current = targetPage;
     setCurrentPage(targetPage);
     onReadingChange(targetPage, pageCount);

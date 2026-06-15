@@ -1265,6 +1265,7 @@ ul {
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
+  overflow-anchor: none;
   padding: 18px;
   border: 1px solid #dbe3ef;
   border-radius: 8px;
