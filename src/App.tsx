@@ -72,11 +72,18 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsClosing, setSettingsClosing] = useState(false);
   const [termSidebarOpen, setTermSidebarOpen] = useState(false);
+  const [noteListManuallyHidden, setNoteListManuallyHidden] = useState(false);
   const settingsCloseTimer = useRef<number | null>(null);
   const resetTermExplainRef = useRef<() => void>(() => {});
   const { customList, selectedId } = useStore(sidebarStore, (state) => state);
   const previousSelectedGroupId = useRef(selectedId);
   const notesState = useStore(notesStore, (state) => state);
+  const selectedGroupNotes = useMemo(
+    () => getNotesBySelectedGroup(notesState.list, selectedId, customList),
+    [customList, notesState.list, selectedId],
+  );
+  const noteListAutoHidden = selectedGroupNotes.length === 0;
+  const hideNoteListPanel = noteListAutoHidden || noteListManuallyHidden;
 
   const noteDetail = useMemo(
     () => notesStore.actions.getNoteDetail(selectedNoteId),
@@ -97,16 +104,16 @@ function App() {
     ? notesState.details[sourceNoteId]?.title ?? ""
     : "";
 
-  const openSettings = () => {
+  const openSettings = useCallback(() => {
     if (settingsCloseTimer.current !== null) {
       window.clearTimeout(settingsCloseTimer.current);
       settingsCloseTimer.current = null;
     }
     setSettingsClosing(false);
     setSettingsOpen(true);
-  };
+  }, []);
 
-  const closeSettings = () => {
+  const closeSettings = useCallback(() => {
     if (!settingsOpen || settingsClosing) return;
     setSettingsClosing(true);
     settingsCloseTimer.current = window.setTimeout(() => {
@@ -114,15 +121,15 @@ function App() {
       setSettingsClosing(false);
       settingsCloseTimer.current = null;
     }, 220);
-  };
+  }, [settingsClosing, settingsOpen]);
 
-  const toggleSettings = () => {
+  const toggleSettings = useCallback(() => {
     if (settingsOpen && !settingsClosing) {
       closeSettings();
       return;
     }
     openSettings();
-  };
+  }, [closeSettings, openSettings, settingsClosing, settingsOpen]);
 
   const activateNote = useCallback((id: string) => {
     setSelectedNoteId(id);
@@ -169,12 +176,12 @@ function App() {
     ? pdfDocuments.find((document) => document.id === noteDetail.pdf_document_id)
     : null;
 
-  const handleSelectNote = async (id: string) => {
+  const handleSelectNote = useCallback(async (id: string) => {
     closeSettings();
     setSelectedNoteId(id);
     const detail = notesStore.actions.getNoteDetail(id);
     await syncPdfDocumentForNote(detail);
-  };
+  }, [closeSettings, syncPdfDocumentForNote]);
 
   const handleSelectGlobalSearchResult = async (id: string, query: string) => {
     setGlobalSearchOpen(false);
@@ -190,7 +197,7 @@ function App() {
 
   const handleOpenSourceNote = () => {
     if (!sourceNoteId) return;
-    handleSelectNote(sourceNoteId);
+    void handleSelectNote(sourceNoteId);
   };
 
   const handleOpenSourcePdf = () => {
@@ -220,18 +227,21 @@ function App() {
     previousSelectedGroupId.current = selectedId;
     if (!selectedGroupChanged && selectedNoteId) return;
 
-    const firstNote = getNotesBySelectedGroup(
-      notesState.list,
-      selectedId,
-      customList,
-    )[0];
+    const firstNote = selectedGroupNotes[0];
     if (!firstNote) {
+      clearPdfDocument();
       setSelectedNoteId("");
       return;
     }
 
-    setSelectedNoteId(firstNote.id);
-  }, [customList, notesState.list, selectedId, selectedNoteId]);
+    void handleSelectNote(firstNote.id);
+  }, [
+    clearPdfDocument,
+    handleSelectNote,
+    selectedGroupNotes,
+    selectedId,
+    selectedNoteId,
+  ]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -290,7 +300,7 @@ function App() {
         openWebSummary: () => setWebSummaryOpen(true),
       }}
     >
-      <div className="app">
+      <div className={`app ${hideNoteListPanel ? "app-note-list-hidden" : ""}`}>
         <Sidebar
           settingsActive={settingsOpen}
           onOpenSettings={toggleSettings}
@@ -310,6 +320,11 @@ function App() {
             noteSummaryLoading={noteAi.noteSummaryLoading}
             pdfLoading={pdfLoading}
             pdfActive={Boolean(pdfDocument)}
+            noteListVisible={!hideNoteListPanel}
+            noteListToggleDisabled={noteListAutoHidden}
+            onToggleNoteList={() =>
+              setNoteListManuallyHidden((hidden) => !hidden)
+            }
             onOpenGlobalSearch={() => {
               closeSettings();
               setGlobalSearchOpen(true);

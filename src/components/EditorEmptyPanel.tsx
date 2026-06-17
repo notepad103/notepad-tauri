@@ -32,12 +32,22 @@ export default function EditorEmptyPanel({
         <div className="editor-empty-illustration" aria-hidden="true">
           <span />
         </div>
-        <h2>选择或新建一条笔记</h2>
-        <p>当前没有可编辑内容。新建笔记后，标题、正文和目录会在这里展开。</p>
+        <h2>打开 PDF，开始阅读和记录</h2>
+        <p>导入 PDF 后会自动创建阅读笔记，并保留阅读进度、摘录和总结内容。</p>
         <div className="editor-empty-actions">
           <button
             type="button"
-            className="toolbar-btn toolbar-btn-primary"
+            className="toolbar-btn toolbar-btn-primary editor-empty-primary"
+            disabled={pdfLoading}
+            onClick={() => {
+              void openPdf();
+            }}
+          >
+            {pdfLoading ? "打开中..." : "打开 PDF"}
+          </button>
+          <button
+            type="button"
+            className="toolbar-btn editor-empty-secondary"
             onClick={() => {
               void handleCreateNote();
             }}
@@ -46,20 +56,10 @@ export default function EditorEmptyPanel({
           </button>
           <button
             type="button"
-            className="toolbar-btn"
+            className="toolbar-btn editor-empty-secondary"
             onClick={openWebSummary}
           >
-            AI 总结网页
-          </button>
-          <button
-            type="button"
-            className="toolbar-btn"
-            disabled={pdfLoading}
-            onClick={() => {
-              void openPdf();
-            }}
-          >
-            {pdfLoading ? "打开中..." : "打开 PDF"}
+            总结网页
           </button>
         </div>
       </div>

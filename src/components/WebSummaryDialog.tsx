@@ -88,7 +88,7 @@ export default function WebSummaryDialog({
         }}
       >
         <div className="web-summary-header">
-          <h2>AI 总结网页</h2>
+          <h2>总结网页</h2>
           <button
             type="button"
             className="modal-close-btn"

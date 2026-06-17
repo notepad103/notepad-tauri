@@ -12,6 +12,9 @@ interface EditorToolbarProps {
   noteSummaryLoading: boolean;
   pdfLoading: boolean;
   pdfActive: boolean;
+  noteListVisible: boolean;
+  noteListToggleDisabled: boolean;
+  onToggleNoteList: () => void;
   onOpenGlobalSearch: () => void;
   onCreateNoteSummary: () => void | Promise<void>;
   onExplainTerms: () => void | Promise<void>;
@@ -24,6 +27,9 @@ export default function EditorToolbar({
   noteSummaryLoading,
   pdfLoading,
   pdfActive,
+  noteListVisible,
+  noteListToggleDisabled,
+  onToggleNoteList,
   onOpenGlobalSearch,
   onCreateNoteSummary,
   onExplainTerms,
@@ -103,6 +109,24 @@ export default function EditorToolbar({
     <header className="editor-toolbar">
       <button
         type="button"
+        className={`toolbar-btn toolbar-icon-btn note-list-toggle-btn ${
+          noteListVisible ? "note-list-toggle-visible" : ""
+        }`}
+        aria-label={noteListVisible ? "隐藏笔记列表" : "展示笔记列表"}
+        disabled={noteListToggleDisabled}
+        title={
+          noteListToggleDisabled
+            ? "当前范围没有笔记"
+            : noteListVisible
+              ? "隐藏笔记列表"
+              : "展示笔记列表"
+        }
+        onClick={onToggleNoteList}
+      >
+        <span className="note-list-toggle-icon" aria-hidden="true" />
+      </button>
+      <button
+        type="button"
         className="toolbar-btn"
         title="全局搜索 Cmd/Ctrl + Shift + F"
         onClick={onOpenGlobalSearch}
@@ -180,7 +204,7 @@ export default function EditorToolbar({
         className="toolbar-btn"
         onClick={openWebSummary}
       >
-        AI 总结网页
+        总结网页
       </button>
       <button
         type="button"

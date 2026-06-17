@@ -271,13 +271,13 @@ export default function Sidebar({
         {onOpenSettings && (
           <button
             type="button"
-            className={`sidebar-settings-btn ${
-              settingsActive ? "sidebar-settings-btn-active" : ""
+            className={`sidebar-action-btn ${
+              settingsActive ? "sidebar-action-btn-active" : ""
             }`}
             onClick={onOpenSettings}
           >
             <span>设置</span>
-            <span className="sidebar-settings-icon" aria-hidden="true">
+            <span className="sidebar-action-icon" aria-hidden="true">
               ⚙
             </span>
           </button>

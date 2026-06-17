@@ -49,6 +49,11 @@ ul {
   height: 100vh;
   overflow: hidden;
   background: #f5f6f8;
+  transition: grid-template-columns 0.22s ease;
+}
+
+.app-note-list-hidden {
+  grid-template-columns: 200px minmax(0px, 0px) minmax(0, 1fr);
 }
 
 .editor-shell {
@@ -300,12 +305,15 @@ ul {
 }
 
 .sidebar-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   margin-top: auto;
   padding: 10px 0 4px;
   border-top: 1px solid #eee;
 }
 
-.sidebar-settings-btn {
+.sidebar-action-btn {
   display: flex;
   width: 100%;
   align-items: center;
@@ -320,13 +328,24 @@ ul {
   text-align: left;
 }
 
-.sidebar-settings-btn:hover,
-.sidebar-settings-btn-active {
+.sidebar-action-btn:hover,
+.sidebar-action-btn-active {
   color: #2563eb;
   background: #eff6ff;
 }
 
-.sidebar-settings-icon {
+.sidebar-action-btn:disabled {
+  cursor: default;
+  color: #9ca3af;
+  background: #f6f7f9;
+}
+
+.sidebar-action-btn:disabled:hover {
+  color: #9ca3af;
+  background: #f6f7f9;
+}
+
+.sidebar-action-icon {
   font-size: 16px;
   line-height: 1;
 }
@@ -368,6 +387,54 @@ ul {
   border-radius: 8px;
   background: #fff;
   transition: background 0.15s, border-color 0.15s;
+}
+
+.toolbar-icon-btn {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.note-list-toggle-icon {
+  position: relative;
+  width: 18px;
+  height: 15px;
+  border: 1.5px solid currentColor;
+  border-radius: 3px;
+}
+
+.note-list-toggle-icon::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 5px;
+  width: 1.5px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.45;
+}
+
+.note-list-toggle-icon::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 2px;
+  width: 5px;
+  height: 5px;
+  border-top: 1.5px solid currentColor;
+  border-right: 1.5px solid currentColor;
+  transform: translateY(-50%) rotate(45deg);
+  transition: right 0.18s ease, transform 0.18s ease;
+}
+
+.note-list-toggle-visible .note-list-toggle-icon::after {
+  right: 4px;
+  transform: translateY(-50%) rotate(-135deg);
 }
 
 .toolbar-select {
@@ -703,10 +770,27 @@ ul {
 .note-list-panel {
   display: flex;
   flex-direction: column;
+  width: 100%;
   background: #fafbfc;
   border-right: 1px solid #e8eaed;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
+  opacity: 1;
+  transform: translateX(0);
+  visibility: visible;
+  transition: opacity 0.18s ease, transform 0.22s ease,
+    border-color 0.22s ease, visibility 0s linear 0s;
+}
+
+.app-note-list-hidden .note-list-panel {
+  border-right-color: transparent;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-12px);
+  visibility: hidden;
+  transition: opacity 0.16s ease, transform 0.22s ease,
+    border-color 0.22s ease, visibility 0s linear 0.22s;
 }
 
 .panel-header {
