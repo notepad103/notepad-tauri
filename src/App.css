@@ -44,8 +44,8 @@ ul {
 .app {
   position: relative;
   display: grid;
-  grid-template-columns: 200px 280px 1fr;
-  min-width: 1600px;
+  grid-template-columns: 200px minmax(220px, 280px) minmax(0, 1fr);
+  min-width: 0;
   height: 100vh;
   overflow: hidden;
   background: #f5f6f8;
@@ -340,6 +340,13 @@ ul {
   border-bottom: 1px solid #f0f0f0;
   flex-shrink: 0;
   background: #fff;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.editor-toolbar::-webkit-scrollbar {
+  display: none;
 }
 
 .editor-toolbar-spacer {
@@ -1253,6 +1260,10 @@ ul {
   min-height: 0;
 }
 
+.pdf-reader-workspace-no-outline {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .pdf-reader-surface {
   display: flex;
   flex: 1;
@@ -1260,129 +1271,14 @@ ul {
   padding: 12px;
 }
 
-.pdf-reader-pages {
+.pdf-reader-embed {
   flex: 1;
   min-width: 0;
   min-height: 0;
-  overflow-y: auto;
-  overflow-anchor: none;
-  padding: 18px;
+  overflow: hidden;
   border: 1px solid #dbe3ef;
   border-radius: 8px;
-  background: #eef2f7;
-}
-
-.pdf-reader-page {
-  --user-unit: 1;
-  --total-scale-factor: calc(var(--scale-factor, 1) * var(--user-unit));
-  --scale-round-x: 1px;
-  --scale-round-y: 1px;
-  position: relative;
-  width: fit-content;
-  margin: 0 auto 18px;
-  padding: 0;
-  border-radius: 4px;
-  background: #fff;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
-}
-
-.pdf-reader-page:last-child {
-  margin-bottom: 0;
-}
-
-.pdf-reader-page canvas {
-  width: 100%;
-  max-width: 100%;
-  display: block;
-  background: #fff;
-}
-
-.pdf-reader-text-layer {
-  position: absolute;
-  inset: 0;
-  overflow: clip;
-  color-scheme: only light;
-  line-height: 1;
-  text-align: initial;
-  letter-spacing: normal;
-  word-spacing: normal;
-  transform-origin: 0 0;
-  -webkit-text-size-adjust: none;
-  text-size-adjust: none;
-  forced-color-adjust: none;
-  z-index: 1;
-  opacity: 1;
-  transition: opacity 80ms ease;
-  --min-font-size: 1;
-  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
-  --min-font-size-inv: calc(1 / var(--min-font-size));
-}
-
-.pdf-reader-text-layer-hidden {
-  opacity: 0;
-  pointer-events: none;
-}
-
-.pdf-reader-text-layer span,
-.pdf-reader-text-layer br {
-  position: absolute;
-  color: transparent;
-  white-space: pre;
-  cursor: text;
-  transform-origin: 0% 0%;
-  -webkit-user-select: text;
-  user-select: text;
-}
-
-.pdf-reader-text-layer > :not(.markedContent),
-.pdf-reader-text-layer .markedContent span:not(.markedContent) {
-  z-index: 1;
-  font-size: calc(var(--text-scale-factor) * var(--font-height));
-  transform: rotate(var(--rotate)) scaleX(var(--scale-x))
-    scale(var(--min-font-size-inv));
-}
-
-.pdf-reader-text-layer .markedContent {
-  display: contents;
-}
-
-.pdf-reader-text-layer span[role="img"] {
-  cursor: default;
-  -webkit-user-select: none;
-  user-select: none;
-}
-
-.pdf-reader-text-layer ::selection {
-  background: rgba(37, 99, 235, 0.24);
-}
-
-.pdf-reader-text-layer .endOfContent {
-  position: absolute;
-  inset: 100% 0 0;
-  z-index: 0;
-  display: block;
-  cursor: default;
-  -webkit-user-select: none;
-  user-select: none;
-}
-
-.pdf-reader-text-layer.selecting .endOfContent {
-  top: 0;
-}
-
-.pdf-reader-page-number {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 2;
-  min-width: 26px;
-  padding: 2px 6px;
-  border-radius: 999px;
-  color: #475569;
-  background: rgba(248, 250, 252, 0.9);
-  font-size: 11px;
-  line-height: 1.4;
-  text-align: center;
+  background: #f8fafc;
 }
 
 .pdf-reader-page-status {
@@ -2274,47 +2170,6 @@ ul {
   color: #6b7280;
   font-size: 12px;
   text-align: center;
-}
-
-.selection-context-menu {
-  position: fixed;
-  z-index: 30;
-  display: inline-flex;
-  min-width: 160px;
-  padding: 4px;
-  border: 1px solid #e5e7eb;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
-  backdrop-filter: blur(8px);
-}
-
-.selection-context-menu-item {
-  display: flex;
-  width: 100%;
-  height: 34px;
-  align-items: center;
-  justify-content: center;
-  padding: 0 10px;
-  border-radius: 999px;
-  color: #111827;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1;
-  text-align: left;
-  white-space: nowrap;
-}
-
-.selection-context-menu-item:hover {
-  color: #2563eb;
-  background: #eff6ff;
-}
-
-.selection-context-menu-item:disabled,
-.selection-context-menu-item:disabled:hover {
-  color: #9ca3af;
-  cursor: not-allowed;
-  background: transparent;
 }
 
 .tiptap-toolbar-btn:disabled {

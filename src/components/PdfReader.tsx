@@ -4,8 +4,23 @@ import {
   useMemo,
   useRef,
   useState,
-  type MouseEvent,
 } from "react";
+import {
+  CommandsPlugin,
+  DocumentManagerPlugin,
+  PDFViewer,
+  ScrollStrategy,
+  UIPlugin,
+  ZoomMode,
+  type Command,
+  type PDFViewerConfig,
+  type PluginRegistry,
+  type ScrollCapability,
+  type ScrollPlugin,
+  type SelectionCapability,
+  type SelectionMenuItem,
+  type SelectionPlugin,
+} from "@embedpdf/react-pdf-viewer";
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.mjs?url";
@@ -28,6 +43,7 @@ export interface PdfDocument {
 
 interface PdfReaderProps {
   document: PdfDocument;
+  showProjectOutline?: boolean;
   termCount?: number;
   termSidebarOpen?: boolean;
   onReadingChange: (page: number, pageCount: number) => void;
@@ -93,12 +109,6 @@ interface PdfPageText {
   content: string;
 }
 
-interface PdfPageRenderMetric {
-  width: number;
-  height: number;
-  scale: number;
-}
-
 interface LoadedPdfState {
   documentId: number;
   pdf: pdfjsLib.PDFDocumentProxy;
@@ -121,13 +131,6 @@ interface PdfSummaryProgress {
   current: number;
   total: number;
 }
-interface SelectionSummaryMenu {
-  x: number;
-  y: number;
-  text: string;
-}
-type PdfRenderTask = ReturnType<pdfjsLib.PDFPageProxy["render"]>;
-type PdfTextLayer = InstanceType<typeof pdfjsLib.TextLayer>;
 type PdfTextItem = Awaited<
   ReturnType<pdfjsLib.PDFPageProxy["getTextContent"]>
 >["items"][number];
@@ -138,25 +141,18 @@ type PdfOutlineNode = NonNullable<
 const TARGET_CHUNK_CHARS = 5_000;
 const MIN_CHUNK_CHARS = 3_000;
 const MAX_CHUNK_CHARS = 8_000;
-const RENDER_WINDOW_RANGE = 10;
-const RENDER_WINDOW_EDGE_THRESHOLD = 5;
+const CREATE_SUMMARY_SELECTION_COMMAND_ID = "selection:create-summary-note";
+const CREATE_SUMMARY_SELECTION_ITEM_ID = "create-summary-note";
+const EMBED_PDF_NAV_SIDEBAR_ID = "sidebar-panel";
+const EMBED_PDF_NAV_SIDEBAR_COMMAND_ID = "panel:toggle-sidebar";
+const EMBED_PDF_NAV_SIDEBAR_PLACEMENT = "right";
+const EMBED_PDF_NAV_SIDEBAR_SLOT = "main";
+const EMBED_PDF_OUTLINE_TAB_ID = "outline";
 
 function formatFileSize(size: number): string {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function isPdfRenderCanceledError(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  return (
-    err.name === "RenderingCancelledException" ||
-    err.name === "AbortException" ||
-    err.message.includes("Worker was destroyed") ||
-    err.message.includes("Transport destroyed") ||
-    err.message.includes("sendWithPromise") ||
-    err.message.includes("messageHandler")
-  );
 }
 
 function normalizePdfText(text: string): string {
@@ -247,35 +243,6 @@ function buildPdfChunks(pageTexts: PdfPageText[]): PdfChunkInput[] {
   return chunks;
 }
 
-function getPdfRenderWindow(centerPage: number, pageCount: number) {
-  const center = Math.min(Math.max(centerPage, 1), Math.max(pageCount, 1));
-  return {
-    start: Math.max(center - RENDER_WINDOW_RANGE, 1),
-    end: Math.min(center + RENDER_WINDOW_RANGE, pageCount),
-  };
-}
-
-function buildPdfRenderWindowOrder(centerPage: number, pageCount: number): number[] {
-  const pages: number[] = [];
-  const seen = new Set<number>();
-  const center = Math.min(Math.max(centerPage, 1), Math.max(pageCount, 1));
-  const { start, end } = getPdfRenderWindow(centerPage, pageCount);
-  const addPage = (pageNumber: number) => {
-    if (pageNumber < start || pageNumber > end || seen.has(pageNumber)) {
-      return;
-    }
-    seen.add(pageNumber);
-    pages.push(pageNumber);
-  };
-
-  for (let offset = 0; offset <= RENDER_WINDOW_RANGE; offset += 1) {
-    addPage(center - offset);
-    addPage(center + offset);
-  }
-
-  return pages;
-}
-
 function serializeOutlineDest(dest: PdfOutlineNode["dest"]): string | null {
   if (!dest) return null;
   if (typeof dest === "string") return dest;
@@ -324,9 +291,7 @@ async function extractPdfOutlineItems(
   ) => {
     for (const node of nodes) {
       const title = normalizePdfText(node.title || "");
-      if (!title) {
-        continue;
-      }
+      if (!title) continue;
 
       sort += 1;
       const clientId = `outline-${sort}`;
@@ -405,6 +370,7 @@ async function extractPdfPageTexts(
 
 export default function PdfReader({
   document,
+  showProjectOutline = true,
   termCount = 0,
   termSidebarOpen = false,
   onReadingChange,
@@ -413,6 +379,7 @@ export default function PdfReader({
   onOpenTerms,
 }: PdfReaderProps) {
   const [loadedPdfState, setLoadedPdfState] = useState<LoadedPdfState | null>(null);
+  const [pdfSource, setPdfSource] = useState("");
   const [pageCount, setPageCount] = useState(document.page_count || 0);
   const [currentPage, setCurrentPage] = useState(
     Math.max(document.last_page || 1, 1),
@@ -423,42 +390,20 @@ export default function PdfReader({
   const [chunkMessage, setChunkMessage] = useState("");
   const [summaryProgress, setSummaryProgress] =
     useState<PdfSummaryProgress | null>(null);
-  const [selectionSummaryMenu, setSelectionSummaryMenu] =
-    useState<SelectionSummaryMenu | null>(null);
   const [outlineItems, setOutlineItems] = useState<PdfOutlineItem[]>([]);
   const [outlineStatus, setOutlineStatus] = useState<OutlineStatus>("idle");
   const [outlineMessage, setOutlineMessage] = useState("");
-  const pagesRef = useRef<HTMLDivElement>(null);
-  const canvasRefs = useRef<(HTMLCanvasElement | null)[]>([]);
-  const textLayerRefs = useRef<(HTMLDivElement | null)[]>([]);
-  const pageRenderMetricsRef = useRef<(PdfPageRenderMetric | null)[]>([]);
-  const activeCanvasRenderTasksRef = useRef<Map<number, PdfRenderTask>>(new Map());
-  const renderedCanvasPagesRef = useRef<Set<number>>(new Set());
-  const queuedCanvasPagesRef = useRef<Set<number>>(new Set());
-  const canvasRenderQueueRef = useRef<number[]>([]);
-  const canvasRenderWorkerRunningRef = useRef(false);
-  const canvasRenderVersionRef = useRef(0);
-  const activeRenderWindowRef = useRef(getPdfRenderWindow(currentPage, pageCount));
-  const activeTextLayersRef = useRef<Map<number, PdfTextLayer>>(new Map());
-  const renderedTextLayerPagesRef = useRef<Set<number>>(new Set());
-  const textLayerStopTimerRef = useRef<number | null>(null);
-  const textLayerRenderVersionRef = useRef(0);
-  const scrollFrameRef = useRef<number | null>(null);
+  const viewerRef = useRef<HTMLDivElement>(null);
+  const scrollCapabilityRef = useRef<ScrollCapability | null>(null);
+  const selectionCapabilityRef = useRef<SelectionCapability | null>(null);
+  const scrollUnsubscribeRef = useRef<(() => void)[]>([]);
   const currentPageRef = useRef(currentPage);
-  const restoreTargetPageRef = useRef(Math.max(document.last_page || 1, 1));
-  const pendingRenderedJumpPageRef = useRef<number | null>(null);
-  const pendingRenderedJumpBehaviorRef = useRef<ScrollBehavior>("auto");
-  const pendingInitialJumpRef = useRef(false);
-  const initialJumpFrameRef = useRef<number | null>(null);
-  const jumpedDocumentIdRef = useRef<number | null>(null);
   const chunkRequestIdRef = useRef(0);
+  const pendingInitialPageRef = useRef(Math.max(document.last_page || 1, 1));
+  const initialJumpPendingRef = useRef(true);
   const pdf =
     loadedPdfState?.documentId === document.id ? loadedPdfState.pdf : null;
 
-  const pageNumbers = useMemo(
-    () => Array.from({ length: pageCount }, (_, index) => index + 1),
-    [pageCount],
-  );
   const activeOutlineItemId = useMemo(() => {
     return outlineItems.reduce<number | null>((activeId, item) => {
       if (!item.page_number || item.page_number > currentPage) return activeId;
@@ -470,113 +415,332 @@ export default function PdfReader({
     }, null);
   }, [currentPage, outlineItems]);
 
-  const getSelectedPdfText = useCallback(() => {
-    const selection = window.getSelection();
-    const pagesEl = pagesRef.current;
-    if (!selection || selection.isCollapsed || !pagesEl) return "";
-
-    const anchorNode = selection.anchorNode;
-    const focusNode = selection.focusNode;
-    if (
-      !anchorNode ||
-      !focusNode ||
-      !pagesEl.contains(anchorNode) ||
-      !pagesEl.contains(focusNode)
-    ) {
-      return "";
-    }
-
-    return normalizePdfText(selection.toString());
-  }, []);
-
-  const updateSelectionSummaryMenu = useCallback(() => {
-    const selection = window.getSelection();
-    const pagesEl = pagesRef.current;
-    if (
-      !selection ||
-      selection.isCollapsed ||
-      selection.rangeCount === 0 ||
-      !pagesEl ||
-      !selection.anchorNode ||
-      !selection.focusNode ||
-      !pagesEl.contains(selection.anchorNode) ||
-      !pagesEl.contains(selection.focusNode)
-    ) {
-      setSelectionSummaryMenu(null);
-      return;
-    }
-
-    const selectedText = getSelectedPdfText();
-    if (!selectedText) {
-      setSelectionSummaryMenu(null);
-      return;
-    }
-
-    const range = selection.getRangeAt(0);
-    const fallbackRect = Array.from(range.getClientRects()).find(
-      (item) => item.width || item.height,
-    );
-    const rect = range.getBoundingClientRect();
-    const selectionRect = rect.width || rect.height ? rect : fallbackRect;
-    if (!selectionRect) {
-      setSelectionSummaryMenu(null);
-      return;
-    }
-
-    const menuWidth = 160;
-    const x = Math.min(
-      Math.max(selectionRect.left + selectionRect.width / 2 - menuWidth / 2, 8),
-      window.innerWidth - menuWidth - 8,
-    );
-    const preferredTop = selectionRect.top - 48;
-    const y =
-      preferredTop >= 8
-        ? preferredTop
-        : Math.min(selectionRect.bottom + 8, window.innerHeight - 48);
-
-    setSelectionSummaryMenu({
-      x,
-      y,
-      text: selectedText,
-    });
-  }, [getSelectedPdfText]);
-
-  const handlePdfContextMenu = useCallback(
-    (event: MouseEvent<HTMLDivElement>) => {
-      const target = event.target as HTMLElement;
-      if (!target.closest(".pdf-reader-text-layer")) {
-        setSelectionSummaryMenu(null);
-        return;
-      }
-
-      const selectedText = getSelectedPdfText();
-      if (!selectedText) {
-        setSelectionSummaryMenu(null);
-        return;
-      }
-
-      event.preventDefault();
-      setSelectionSummaryMenu({
-        x: Math.min(event.clientX, window.innerWidth - 172),
-        y: Math.min(event.clientY, window.innerHeight - 48),
-        text: selectedText,
-      });
-    },
-    [getSelectedPdfText],
+  const viewerConfig = useMemo<PDFViewerConfig>(
+    () => ({
+      src: pdfSource,
+      theme: { preference: "light" },
+      tabBar: "never",
+      fonts: {
+        ui: null,
+        signature: null,
+      },
+      fontFallback: null,
+      disabledCategories: [
+        "annotation",
+        "annotation-comment",
+        "redaction",
+        "document-open",
+        "document-close",
+        "document-print",
+        "document-export",
+        "panel-comment",
+      ],
+      scroll: {
+        defaultStrategy: ScrollStrategy.Vertical,
+        defaultPageGap: 12,
+        defaultBufferSize: 5,
+      },
+      zoom: {
+        defaultZoomLevel: ZoomMode.FitWidth,
+      },
+    }),
+    [pdfSource],
   );
 
-  const handleCreateSelectionSummary = () => {
-    if (!selectionSummaryMenu) return;
-    const selectedText = selectionSummaryMenu.text;
-    setSelectionSummaryMenu(null);
-    void onCreateNoteFromSelection?.(selectedText);
-  };
+  const clearScrollSubscriptions = useCallback(() => {
+    scrollUnsubscribeRef.current.forEach((unsubscribe) => unsubscribe());
+    scrollUnsubscribeRef.current = [];
+  }, []);
+
+  const installEmbedPdfOutlineSidebar = useCallback(
+    (registry: PluginRegistry) => {
+      const commandsCapability = registry
+        .getPlugin<CommandsPlugin>("commands")
+        ?.provides();
+      const uiCapability = registry.getPlugin<UIPlugin>("ui")?.provides();
+      const documentManagerCapability = registry
+        .getPlugin<DocumentManagerPlugin>("document-manager")
+        ?.provides();
+      if (!commandsCapability || !uiCapability) return;
+
+      uiCapability.mergeSchema({
+        sidebars: {
+          [EMBED_PDF_NAV_SIDEBAR_ID]: {
+            id: EMBED_PDF_NAV_SIDEBAR_ID,
+            position: {
+              placement: EMBED_PDF_NAV_SIDEBAR_PLACEMENT,
+              slot: EMBED_PDF_NAV_SIDEBAR_SLOT,
+              order: 0,
+            },
+            content: {
+              type: "tabs",
+              defaultTab: EMBED_PDF_OUTLINE_TAB_ID,
+              tabs: [
+                {
+                  id: "thumbnails",
+                  labelKey: "panel.thumbnails",
+                  label: "Thumbnails",
+                  icon: "squares",
+                  componentId: "thumbnails-sidebar",
+                },
+                {
+                  id: EMBED_PDF_OUTLINE_TAB_ID,
+                  labelKey: "panel.outline",
+                  label: "Outline",
+                  icon: "listTree",
+                  componentId: "outline-sidebar",
+                },
+              ],
+            },
+            width: "250px",
+            collapsible: true,
+            defaultOpen: false,
+          },
+        },
+      });
+
+      const sidebarCommand: Command = {
+        id: EMBED_PDF_NAV_SIDEBAR_COMMAND_ID,
+        label: "目录",
+        icon: "sidebar",
+        categories: ["panel", "panel-sidebar"],
+        action: ({ documentId }) => {
+          const uiScope = uiCapability.forDocument(documentId);
+          if (
+            uiScope.isSidebarOpen(
+              "left",
+              EMBED_PDF_NAV_SIDEBAR_SLOT,
+              EMBED_PDF_NAV_SIDEBAR_ID,
+            )
+          ) {
+            uiScope.closeSidebarSlot("left", EMBED_PDF_NAV_SIDEBAR_SLOT);
+          }
+          uiScope.toggleSidebar(
+            EMBED_PDF_NAV_SIDEBAR_PLACEMENT,
+            EMBED_PDF_NAV_SIDEBAR_SLOT,
+            EMBED_PDF_NAV_SIDEBAR_ID,
+            EMBED_PDF_OUTLINE_TAB_ID,
+          );
+        },
+        active: ({ state, documentId }) => {
+          const sidebarSlot =
+            state.plugins.ui?.documents?.[documentId]?.activeSidebars?.[
+              `${EMBED_PDF_NAV_SIDEBAR_PLACEMENT}-${EMBED_PDF_NAV_SIDEBAR_SLOT}`
+            ];
+          return (
+            sidebarSlot?.isOpen &&
+            sidebarSlot.sidebarId === EMBED_PDF_NAV_SIDEBAR_ID
+          );
+        },
+      };
+      commandsCapability.registerCommand(sidebarCommand);
+
+      if (!showProjectOutline) {
+        const openOutlineSidebar = (documentId: string | null | undefined) => {
+          if (!documentId) return false;
+          uiCapability.setActiveSidebar(
+            EMBED_PDF_NAV_SIDEBAR_PLACEMENT,
+            EMBED_PDF_NAV_SIDEBAR_SLOT,
+            EMBED_PDF_NAV_SIDEBAR_ID,
+            documentId,
+            EMBED_PDF_OUTLINE_TAB_ID,
+          );
+          return true;
+        };
+
+        if (openOutlineSidebar(documentManagerCapability?.getActiveDocumentId())) {
+          return;
+        }
+
+        let unsubscribeActiveDocument: (() => void) | undefined;
+        const stopWatchingActiveDocument = () => {
+          unsubscribeActiveDocument?.();
+          unsubscribeActiveDocument = undefined;
+        };
+        unsubscribeActiveDocument =
+          documentManagerCapability?.onActiveDocumentChanged((event) => {
+            if (openOutlineSidebar(event.currentDocumentId)) {
+              stopWatchingActiveDocument();
+            }
+          });
+
+        if (unsubscribeActiveDocument) {
+          scrollUnsubscribeRef.current.push(stopWatchingActiveDocument);
+        }
+
+        window.requestAnimationFrame(() => {
+          if (openOutlineSidebar(documentManagerCapability?.getActiveDocumentId())) {
+            stopWatchingActiveDocument();
+          }
+        });
+      }
+    },
+    [showProjectOutline],
+  );
+
+  const createNoteFromEmbedPdfSelection = useCallback(
+    (documentId: string, selectionCapability: SelectionCapability) => {
+      if (!onCreateNoteFromSelection) return;
+
+      void selectionCapability
+        .getSelectedText(documentId)
+        .toPromise()
+        .then((textParts) => {
+          const selectedText = normalizePdfText(textParts.join("\n"));
+          if (!selectedText) return;
+
+          selectionCapability.clear(documentId);
+          void onCreateNoteFromSelection(selectedText);
+        });
+    },
+    [onCreateNoteFromSelection],
+  );
+
+  const installEmbedPdfSelectionSummaryAction = useCallback(
+    (registry: PluginRegistry, selectionCapability: SelectionCapability) => {
+      if (!onCreateNoteFromSelection) return;
+
+      const commandsCapability = registry
+        .getPlugin<CommandsPlugin>("commands")
+        ?.provides();
+      const uiCapability = registry.getPlugin<UIPlugin>("ui")?.provides();
+      if (!commandsCapability || !uiCapability) return;
+
+      const command: Command = {
+        id: CREATE_SUMMARY_SELECTION_COMMAND_ID,
+        label: "创建摘要笔记",
+        icon: "book",
+        categories: ["selection"],
+        action: ({ documentId }) => {
+          createNoteFromEmbedPdfSelection(documentId, selectionCapability);
+        },
+      };
+      commandsCapability.registerCommand(command);
+
+      const schema = uiCapability.getSchema();
+      const selectionMenu = schema.selectionMenus.selection;
+      if (!selectionMenu) return;
+
+      const summaryMenuItem: SelectionMenuItem = {
+        type: "command-button",
+        id: CREATE_SUMMARY_SELECTION_ITEM_ID,
+        commandId: CREATE_SUMMARY_SELECTION_COMMAND_ID,
+        variant: "icon",
+        categories: ["selection"],
+      };
+      const items = selectionMenu.items.filter(
+        (item) => item.id !== CREATE_SUMMARY_SELECTION_ITEM_ID,
+      );
+      const copySelectionIndex = items.findIndex(
+        (item) => item.id === "copy-selection",
+      );
+      items.splice(
+        copySelectionIndex >= 0 ? copySelectionIndex + 1 : 0,
+        0,
+        summaryMenuItem,
+      );
+
+      const visibilityItemIds = new Set([
+        ...(selectionMenu.visibilityDependsOn?.itemIds ?? []),
+        CREATE_SUMMARY_SELECTION_ITEM_ID,
+      ]);
+      uiCapability.mergeSchema({
+        selectionMenus: {
+          ...schema.selectionMenus,
+          selection: {
+            ...selectionMenu,
+            visibilityDependsOn: {
+              ...selectionMenu.visibilityDependsOn,
+              itemIds: Array.from(visibilityItemIds),
+            },
+            items,
+          },
+        },
+      });
+    },
+    [createNoteFromEmbedPdfSelection, onCreateNoteFromSelection],
+  );
+
+  const handleEmbedPdfReady = useCallback(
+    (registry: PluginRegistry) => {
+      clearScrollSubscriptions();
+      installEmbedPdfOutlineSidebar(registry);
+      const scrollPlugin = registry.getPlugin<ScrollPlugin>("scroll");
+      const selectionPlugin = registry.getPlugin<SelectionPlugin>("selection");
+      const scrollCapability = scrollPlugin?.provides() as ScrollCapability | undefined;
+      const selectionCapability = selectionPlugin?.provides() as
+        | SelectionCapability
+        | undefined;
+      scrollCapabilityRef.current = scrollCapability ?? null;
+      selectionCapabilityRef.current = selectionCapability ?? null;
+      if (selectionCapability) {
+        installEmbedPdfSelectionSummaryAction(registry, selectionCapability);
+      }
+      if (!scrollCapability) return;
+
+      const resolveInitialPage = (totalPages: number) =>
+        Math.min(
+          Math.max(pendingInitialPageRef.current, 1),
+          Math.max(totalPages, 1),
+        );
+
+      const commitPageChange = (page: number, totalPages: number) => {
+        currentPageRef.current = page;
+        setCurrentPage(page);
+        setPageCount(totalPages);
+        onReadingChange(page, totalPages);
+      };
+
+      const jumpToInitialPage = (totalPages: number) => {
+        const initialPage = resolveInitialPage(totalPages);
+        scrollCapability.scrollToPage({
+          pageNumber: initialPage,
+          behavior: "instant",
+          alignY: 0,
+        });
+        initialJumpPendingRef.current = false;
+        commitPageChange(initialPage, totalPages);
+      };
+
+      const unsubscribePageChange = scrollCapability.onPageChange((event) => {
+        if (initialJumpPendingRef.current) {
+          const initialPage = resolveInitialPage(event.totalPages);
+          if (event.pageNumber !== initialPage) return;
+          initialJumpPendingRef.current = false;
+        }
+        if (event.pageNumber === currentPageRef.current) return;
+        commitPageChange(event.pageNumber, event.totalPages);
+      });
+
+      const unsubscribeLayoutReady = scrollCapability.onLayoutReady((event) => {
+        if (!initialJumpPendingRef.current) return;
+        window.requestAnimationFrame(() => jumpToInitialPage(event.totalPages));
+      });
+
+      scrollUnsubscribeRef.current = [
+        unsubscribePageChange,
+        unsubscribeLayoutReady,
+      ];
+    },
+    [
+      clearScrollSubscriptions,
+      installEmbedPdfOutlineSidebar,
+      installEmbedPdfSelectionSummaryAction,
+      onReadingChange,
+    ],
+  );
 
   useEffect(() => {
     let canceled = false;
     let task: pdfjsLib.PDFDocumentLoadingTask | null = null;
     let publishedPdf = false;
+    const initialPage = Math.max(document.last_page || 1, 1);
+
+    clearScrollSubscriptions();
+    scrollCapabilityRef.current = null;
+    selectionCapabilityRef.current = null;
     setLoadedPdfState(null);
+    setPdfSource("");
     setLoading(true);
     setError("");
     setChunkStatus("idle");
@@ -586,46 +750,18 @@ export default function PdfReader({
     setOutlineStatus("idle");
     setOutlineMessage("");
     setPageCount(document.page_count || 0);
-    canvasRefs.current = [];
-    textLayerRefs.current = [];
-    pageRenderMetricsRef.current = [];
-    activeCanvasRenderTasksRef.current.forEach((renderTask) => renderTask.cancel());
-    activeCanvasRenderTasksRef.current.clear();
-    renderedCanvasPagesRef.current.clear();
-    queuedCanvasPagesRef.current.clear();
-    canvasRenderQueueRef.current = [];
-    canvasRenderWorkerRunningRef.current = false;
-    canvasRenderVersionRef.current += 1;
-    activeTextLayersRef.current.forEach((textLayer) => textLayer.cancel());
-    activeTextLayersRef.current.clear();
-    renderedTextLayerPagesRef.current.clear();
-    textLayerRenderVersionRef.current += 1;
-    if (textLayerStopTimerRef.current !== null) {
-      window.clearTimeout(textLayerStopTimerRef.current);
-      textLayerStopTimerRef.current = null;
-    }
-    if (initialJumpFrameRef.current !== null) {
-      window.cancelAnimationFrame(initialJumpFrameRef.current);
-      initialJumpFrameRef.current = null;
-    }
-    const initialPage = Math.max(document.last_page || 1, 1);
-    restoreTargetPageRef.current = initialPage;
-    pendingRenderedJumpPageRef.current = initialPage;
-    pendingRenderedJumpBehaviorRef.current = "auto";
-    activeRenderWindowRef.current = getPdfRenderWindow(
-      initialPage,
-      document.page_count || 1,
-    );
-    pendingInitialJumpRef.current = true;
-    currentPageRef.current = initialPage;
     setCurrentPage(initialPage);
-    jumpedDocumentIdRef.current = null;
+    currentPageRef.current = initialPage;
+    pendingInitialPageRef.current = initialPage;
+    initialJumpPendingRef.current = true;
     chunkRequestIdRef.current += 1;
 
     invoke<string>("read_pdf_document_file", { id: document.id })
       .then((path) => {
         if (canceled) return null;
-        task = pdfjsLib.getDocument({ url: convertFileSrc(path) });
+        const source = convertFileSrc(path);
+        setPdfSource(source);
+        task = pdfjsLib.getDocument({ url: source });
         return task.promise;
       })
       .then((nextPdf) => {
@@ -637,7 +773,7 @@ export default function PdfReader({
         publishedPdf = true;
         setLoadedPdfState({ documentId: document.id, pdf: nextPdf, task });
         setPageCount(nextPdf.numPages);
-        onReadingChange(Math.max(document.last_page || 1, 1), nextPdf.numPages);
+        onReadingChange(initialPage, nextPdf.numPages);
       })
       .catch((err) => {
         if (canceled) return;
@@ -649,74 +785,14 @@ export default function PdfReader({
 
     return () => {
       canceled = true;
-      activeCanvasRenderTasksRef.current.forEach((renderTask) => renderTask.cancel());
-      activeCanvasRenderTasksRef.current.clear();
-      queuedCanvasPagesRef.current.clear();
-      canvasRenderQueueRef.current = [];
-      canvasRenderWorkerRunningRef.current = false;
-      activeTextLayersRef.current.forEach((textLayer) => textLayer.cancel());
-      activeTextLayersRef.current.clear();
-      if (textLayerStopTimerRef.current !== null) {
-        window.clearTimeout(textLayerStopTimerRef.current);
-        textLayerStopTimerRef.current = null;
-      }
-      if (initialJumpFrameRef.current !== null) {
-        window.cancelAnimationFrame(initialJumpFrameRef.current);
-        initialJumpFrameRef.current = null;
-      }
+      clearScrollSubscriptions();
+      scrollCapabilityRef.current = null;
+      selectionCapabilityRef.current = null;
       if (!publishedPdf) {
         void task?.destroy();
       }
     };
-  }, [document.id, onReadingChange]);
-
-  useEffect(() => {
-    if (!selectionSummaryMenu) return;
-
-    const closeMenu = () => setSelectionSummaryMenu(null);
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeMenu();
-    };
-
-    window.document.addEventListener("click", closeMenu);
-    window.document.addEventListener("scroll", closeMenu, true);
-    window.addEventListener("resize", closeMenu);
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.document.removeEventListener("click", closeMenu);
-      window.document.removeEventListener("scroll", closeMenu, true);
-      window.removeEventListener("resize", closeMenu);
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [selectionSummaryMenu]);
-
-  useEffect(() => {
-    if (!onCreateNoteFromSelection) return;
-
-    let frame: number | null = null;
-    const scheduleUpdate = () => {
-      if (frame !== null) {
-        window.cancelAnimationFrame(frame);
-      }
-      frame = window.requestAnimationFrame(() => {
-        frame = null;
-        updateSelectionSummaryMenu();
-      });
-    };
-
-    const pagesEl = pagesRef.current;
-    window.document.addEventListener("selectionchange", scheduleUpdate);
-    pagesEl?.addEventListener("mouseup", scheduleUpdate);
-    pagesEl?.addEventListener("keyup", scheduleUpdate);
-    return () => {
-      if (frame !== null) {
-        window.cancelAnimationFrame(frame);
-      }
-      window.document.removeEventListener("selectionchange", scheduleUpdate);
-      pagesEl?.removeEventListener("mouseup", scheduleUpdate);
-      pagesEl?.removeEventListener("keyup", scheduleUpdate);
-    };
-  }, [onCreateNoteFromSelection, updateSelectionSummaryMenu]);
+  }, [clearScrollSubscriptions, document.id, onReadingChange]);
 
   useEffect(() => {
     if (!pdf) return;
@@ -936,422 +1012,6 @@ export default function PdfReader({
     }
   }, [chunkBusy, document.id, ensurePdfTextChunks, onSummaryCreated, pdf]);
 
-  const hideTextLayers = useCallback(() => {
-    textLayerRefs.current.forEach((textLayerDiv) => {
-      textLayerDiv?.classList.add("pdf-reader-text-layer-hidden");
-    });
-  }, []);
-
-  const cancelActiveTextLayerRender = useCallback(() => {
-    textLayerRenderVersionRef.current += 1;
-    activeTextLayersRef.current.forEach((textLayer) => textLayer.cancel());
-    activeTextLayersRef.current.clear();
-  }, []);
-
-  const getVisibleTextLayerPages = useCallback(() => {
-    const pagesEl = pagesRef.current;
-    if (!pagesEl || !pageCount) return [];
-
-    const containerRect = pagesEl.getBoundingClientRect();
-    const pages = new Set<number>();
-    canvasRefs.current.forEach((canvas, index) => {
-      const pageEl = canvas?.parentElement;
-      if (!pageEl) return;
-
-      const rect = pageEl.getBoundingClientRect();
-      if (
-        rect.bottom >= containerRect.top - 80 &&
-        rect.top <= containerRect.bottom + 80
-      ) {
-        pages.add(index + 1);
-      }
-    });
-
-    if (!pages.size) {
-      pages.add(Math.min(Math.max(currentPageRef.current, 1), pageCount));
-    }
-
-    return Array.from(pages).sort((a, b) => a - b);
-  }, [pageCount]);
-
-  const renderTextLayerPage = useCallback(
-    async (pageNumber: number, version: number) => {
-      if (!pdf) return;
-      const textLayerDiv = textLayerRefs.current[pageNumber - 1];
-      const metric = pageRenderMetricsRef.current[pageNumber - 1];
-      if (!textLayerDiv || !metric) return;
-
-      if (renderedTextLayerPagesRef.current.has(pageNumber)) {
-        textLayerDiv.classList.remove("pdf-reader-text-layer-hidden");
-        return;
-      }
-      if (activeTextLayersRef.current.has(pageNumber)) return;
-
-      const page = await pdf.getPage(pageNumber);
-      if (textLayerRenderVersionRef.current !== version) return;
-
-      const viewport = page.getViewport({ scale: metric.scale });
-      textLayerDiv.replaceChildren();
-      textLayerDiv.style.width = `${metric.width}px`;
-      textLayerDiv.style.height = `${metric.height}px`;
-
-      const textLayer = new pdfjsLib.TextLayer({
-        textContentSource: page.streamTextContent({
-          includeMarkedContent: true,
-          disableNormalization: true,
-        }),
-        container: textLayerDiv,
-        viewport,
-      });
-      activeTextLayersRef.current.set(pageNumber, textLayer);
-
-      try {
-        await textLayer.render();
-      } catch (err) {
-        if (isPdfRenderCanceledError(err)) return;
-        throw err;
-      } finally {
-        activeTextLayersRef.current.delete(pageNumber);
-      }
-
-      if (textLayerRenderVersionRef.current !== version) return;
-      renderedTextLayerPagesRef.current.add(pageNumber);
-      textLayerDiv.classList.remove("pdf-reader-text-layer-hidden");
-    },
-    [pdf],
-  );
-
-  const renderVisibleTextLayers = useCallback(() => {
-    const version = textLayerRenderVersionRef.current;
-    getVisibleTextLayerPages().forEach((pageNumber) => {
-      void renderTextLayerPage(pageNumber, version).catch((err) => {
-        if (!isPdfRenderCanceledError(err)) {
-          setError(err instanceof Error ? err.message : String(err));
-        }
-      });
-    });
-  }, [getVisibleTextLayerPages, renderTextLayerPage]);
-
-  const scheduleRenderedPageJump = useCallback(
-    (
-      page: number,
-      options: {
-        behavior?: ScrollBehavior;
-        completeInitialJump?: boolean;
-      } = {},
-    ) => {
-      if (!pageCount) return;
-
-      const targetPage = Math.min(Math.max(page, 1), pageCount);
-      const targetPageEl = canvasRefs.current[targetPage - 1]?.parentElement;
-      if (!targetPageEl) return;
-
-      if (options.completeInitialJump) {
-        jumpedDocumentIdRef.current = document.id;
-      }
-      pendingRenderedJumpPageRef.current = null;
-      if (initialJumpFrameRef.current !== null) {
-        window.cancelAnimationFrame(initialJumpFrameRef.current);
-      }
-      initialJumpFrameRef.current = requestAnimationFrame(() => {
-        initialJumpFrameRef.current = null;
-        if (loadedPdfState?.documentId !== document.id) return;
-
-        currentPageRef.current = targetPage;
-        setCurrentPage(targetPage);
-        if (options.completeInitialJump) {
-          pendingInitialJumpRef.current = false;
-        }
-        targetPageEl.scrollIntoView({
-          block: "start",
-          behavior: options.behavior,
-        });
-        if (textLayerStopTimerRef.current !== null) {
-          window.clearTimeout(textLayerStopTimerRef.current);
-        }
-        textLayerStopTimerRef.current = window.setTimeout(() => {
-          textLayerStopTimerRef.current = null;
-          renderVisibleTextLayers();
-        }, 220);
-      });
-    },
-    [document.id, loadedPdfState?.documentId, pageCount, renderVisibleTextLayers],
-  );
-
-  const renderPdfCanvasPage = useCallback(
-    async (pageNumber: number, version: number) => {
-      if (
-        !pdf ||
-        !pageCount ||
-        version !== canvasRenderVersionRef.current ||
-        renderedCanvasPagesRef.current.has(pageNumber)
-      ) {
-        return;
-      }
-
-      let canvas = canvasRefs.current[pageNumber - 1];
-      if (!canvas) {
-        await new Promise<void>((resolve) => {
-          requestAnimationFrame(() => resolve());
-        });
-        canvas = canvasRefs.current[pageNumber - 1];
-      }
-      if (!canvas || version !== canvasRenderVersionRef.current) return;
-
-      const page = await pdf.getPage(pageNumber);
-      if (version !== canvasRenderVersionRef.current) return;
-
-      const containerWidth = Math.max(
-        (pagesRef.current?.clientWidth ?? 860) - 44,
-        320,
-      );
-      const baseViewport = page.getViewport({ scale: 1 });
-      const scale = Math.min(containerWidth / baseViewport.width, 1.6);
-      const viewport = page.getViewport({ scale });
-      const context = canvas.getContext("2d");
-      if (!context) return;
-
-      const pageEl = canvas.parentElement;
-      const pagesEl = pagesRef.current;
-      const shouldPreserveScroll = Boolean(
-        pageEl &&
-          pagesEl &&
-          !pendingInitialJumpRef.current &&
-          pageEl.getBoundingClientRect().bottom <=
-            pagesEl.getBoundingClientRect().top,
-      );
-      const previousHeight = pageEl?.getBoundingClientRect().height ?? 0;
-
-      canvas.width = Math.floor(viewport.width);
-      canvas.height = Math.floor(viewport.height);
-      canvas.style.width = `${Math.floor(viewport.width)}px`;
-      canvas.style.height = `${Math.floor(viewport.height)}px`;
-      pageRenderMetricsRef.current[pageNumber - 1] = {
-        width: Math.floor(viewport.width),
-        height: Math.floor(viewport.height),
-        scale,
-      };
-      if (pageEl) {
-        pageEl.style.setProperty("--scale-factor", `${scale}`);
-        pageEl.style.setProperty("--user-unit", "1");
-        pageEl.style.setProperty("--total-scale-factor", `${scale}`);
-        pageEl.style.setProperty("--scale-round-x", "1px");
-        pageEl.style.setProperty("--scale-round-y", "1px");
-      }
-      if (shouldPreserveScroll && pagesEl && pageEl) {
-        const nextHeight = pageEl.getBoundingClientRect().height;
-        pagesEl.scrollTop += nextHeight - previousHeight;
-      }
-
-      const renderTask = page.render({ canvas, canvasContext: context, viewport });
-      activeCanvasRenderTasksRef.current.set(pageNumber, renderTask);
-      try {
-        await renderTask.promise;
-      } catch (err) {
-        if (isPdfRenderCanceledError(err)) return;
-        throw err;
-      } finally {
-        if (activeCanvasRenderTasksRef.current.get(pageNumber) === renderTask) {
-          activeCanvasRenderTasksRef.current.delete(pageNumber);
-        }
-      }
-
-      if (version !== canvasRenderVersionRef.current) return;
-      renderedCanvasPagesRef.current.add(pageNumber);
-      const restoreTargetPage = Math.min(
-        Math.max(restoreTargetPageRef.current, 1),
-        pageCount,
-      );
-      if (
-        pendingRenderedJumpPageRef.current === pageNumber ||
-        (pendingInitialJumpRef.current && pageNumber === restoreTargetPage)
-      ) {
-        scheduleRenderedPageJump(pageNumber, {
-          behavior: pendingRenderedJumpBehaviorRef.current,
-          completeInitialJump:
-            pendingInitialJumpRef.current && pageNumber === restoreTargetPage,
-        });
-      }
-    },
-    [pageCount, pdf, scheduleRenderedPageJump],
-  );
-
-  const enqueuePdfRenderWindow = useCallback(
-    (centerPage: number, activateWindow = true) => {
-      if (!pdf || !pageCount) return;
-
-      const version = canvasRenderVersionRef.current;
-      if (activateWindow) {
-        activeRenderWindowRef.current = getPdfRenderWindow(centerPage, pageCount);
-      }
-
-      buildPdfRenderWindowOrder(centerPage, pageCount).forEach((pageNumber) => {
-        if (
-          renderedCanvasPagesRef.current.has(pageNumber) ||
-          queuedCanvasPagesRef.current.has(pageNumber)
-        ) {
-          return;
-        }
-        queuedCanvasPagesRef.current.add(pageNumber);
-        canvasRenderQueueRef.current.push(pageNumber);
-      });
-
-      if (canvasRenderWorkerRunningRef.current) return;
-      canvasRenderWorkerRunningRef.current = true;
-
-      void (async () => {
-        while (
-          canvasRenderQueueRef.current.length > 0 &&
-          version === canvasRenderVersionRef.current
-        ) {
-          const pageNumber = canvasRenderQueueRef.current.shift();
-          if (!pageNumber) continue;
-          queuedCanvasPagesRef.current.delete(pageNumber);
-          if (renderedCanvasPagesRef.current.has(pageNumber)) continue;
-          await renderPdfCanvasPage(pageNumber, version);
-        }
-      })()
-        .catch((err) => {
-          if (!isPdfRenderCanceledError(err)) {
-            setError(err instanceof Error ? err.message : String(err));
-          }
-        })
-        .finally(() => {
-          if (version !== canvasRenderVersionRef.current) return;
-
-          canvasRenderWorkerRunningRef.current = false;
-          if (canvasRenderQueueRef.current.length > 0) {
-            enqueuePdfRenderWindow(currentPageRef.current, false);
-          }
-        });
-    },
-    [pageCount, pdf, renderPdfCanvasPage],
-  );
-
-  const restartPdfRenderWindow = useCallback(
-    (centerPage: number, behavior: ScrollBehavior = "auto") => {
-      if (!pdf || !pageCount) return;
-
-      const targetPage = Math.min(Math.max(centerPage, 1), pageCount);
-      activeCanvasRenderTasksRef.current.forEach((renderTask) => renderTask.cancel());
-      activeCanvasRenderTasksRef.current.clear();
-      queuedCanvasPagesRef.current.clear();
-      canvasRenderQueueRef.current = [];
-      canvasRenderWorkerRunningRef.current = false;
-      canvasRenderVersionRef.current += 1;
-      activeRenderWindowRef.current = getPdfRenderWindow(targetPage, pageCount);
-      pendingInitialJumpRef.current = false;
-      jumpedDocumentIdRef.current = document.id;
-      pendingRenderedJumpPageRef.current = targetPage;
-      pendingRenderedJumpBehaviorRef.current = behavior;
-
-      enqueuePdfRenderWindow(targetPage);
-      if (renderedCanvasPagesRef.current.has(targetPage)) {
-        scheduleRenderedPageJump(targetPage, { behavior });
-      }
-    },
-    [document.id, enqueuePdfRenderWindow, pageCount, pdf, scheduleRenderedPageJump],
-  );
-
-  useEffect(() => {
-    if (!pdf || !pageCount) return;
-
-    const targetPage = Math.min(
-      Math.max(restoreTargetPageRef.current, 1),
-      pageCount,
-    );
-    activeRenderWindowRef.current = getPdfRenderWindow(targetPage, pageCount);
-    enqueuePdfRenderWindow(targetPage);
-  }, [enqueuePdfRenderWindow, pageCount, pdf]);
-
-  const enqueueRenderWindowNearEdge = useCallback(
-    (pageNumber: number) => {
-      if (!pageCount) return;
-
-      const { start, end } = activeRenderWindowRef.current;
-      const shouldRenderNextWindow =
-        !renderedCanvasPagesRef.current.has(pageNumber) ||
-        pageNumber <= start + RENDER_WINDOW_EDGE_THRESHOLD ||
-        pageNumber >= end - RENDER_WINDOW_EDGE_THRESHOLD;
-
-      if (shouldRenderNextWindow) {
-        enqueuePdfRenderWindow(pageNumber);
-      }
-    },
-    [enqueuePdfRenderWindow, pageCount],
-  );
-
-  useEffect(() => {
-    const pagesEl = pagesRef.current;
-    if (!pagesEl || !pageCount) return;
-
-    const syncCurrentPage = () => {
-      scrollFrameRef.current = null;
-      if (pendingInitialJumpRef.current || pendingRenderedJumpPageRef.current !== null) {
-        return;
-      }
-
-      const containerRect = pagesEl.getBoundingClientRect();
-      const anchorY = containerRect.top + containerRect.height * 0.35;
-      let nearestPage = 1;
-      let nearestDistance = Number.POSITIVE_INFINITY;
-
-      canvasRefs.current.forEach((canvas, index) => {
-        const pageEl = canvas?.parentElement;
-        if (!pageEl) return;
-        const rect = pageEl.getBoundingClientRect();
-        const distance =
-          rect.top <= anchorY && rect.bottom >= anchorY
-            ? 0
-            : Math.min(Math.abs(rect.top - anchorY), Math.abs(rect.bottom - anchorY));
-        if (distance < nearestDistance) {
-          nearestDistance = distance;
-          nearestPage = index + 1;
-        }
-      });
-
-      enqueueRenderWindowNearEdge(nearestPage);
-      if (currentPageRef.current === nearestPage) return;
-      currentPageRef.current = nearestPage;
-      setCurrentPage(nearestPage);
-      onReadingChange(nearestPage, pageCount);
-    };
-
-    const handleScroll = () => {
-      hideTextLayers();
-      cancelActiveTextLayerRender();
-      if (textLayerStopTimerRef.current !== null) {
-        window.clearTimeout(textLayerStopTimerRef.current);
-      }
-      textLayerStopTimerRef.current = window.setTimeout(() => {
-        textLayerStopTimerRef.current = null;
-        renderVisibleTextLayers();
-      }, 220);
-
-      if (scrollFrameRef.current !== null) return;
-      scrollFrameRef.current = window.requestAnimationFrame(syncCurrentPage);
-    };
-
-    pagesEl.addEventListener("scroll", handleScroll);
-    return () => {
-      pagesEl.removeEventListener("scroll", handleScroll);
-      if (scrollFrameRef.current !== null) {
-        window.cancelAnimationFrame(scrollFrameRef.current);
-      }
-      if (textLayerStopTimerRef.current !== null) {
-        window.clearTimeout(textLayerStopTimerRef.current);
-        textLayerStopTimerRef.current = null;
-      }
-    };
-  }, [
-    cancelActiveTextLayerRender,
-    enqueueRenderWindowNearEdge,
-    hideTextLayers,
-    onReadingChange,
-    pageCount,
-    renderVisibleTextLayers,
-  ]);
-
   useEffect(() => {
     if (!loadedPdfState) return;
 
@@ -1362,7 +1022,11 @@ export default function PdfReader({
 
   const jumpToPage = (page: number) => {
     const targetPage = Math.min(Math.max(page, 1), Math.max(pageCount, 1));
-    restartPdfRenderWindow(targetPage, "smooth");
+    scrollCapabilityRef.current?.scrollToPage({
+      pageNumber: targetPage,
+      behavior: "smooth",
+      alignY: 0,
+    });
     currentPageRef.current = targetPage;
     setCurrentPage(targetPage);
     onReadingChange(targetPage, pageCount);
@@ -1445,7 +1109,11 @@ export default function PdfReader({
           </button>
         </div>
       </header>
-      <div className="pdf-reader-workspace">
+      <div
+        className={`pdf-reader-workspace ${
+          showProjectOutline ? "" : "pdf-reader-workspace-no-outline"
+        }`}
+      >
         <section className="pdf-reader-surface">
           {error ? (
             <div className="pdf-reader-message" role="alert">
@@ -1453,102 +1121,69 @@ export default function PdfReader({
             </div>
           ) : (
             <div
-              ref={pagesRef}
-              className="pdf-reader-pages"
-              onContextMenu={handlePdfContextMenu}
+              ref={viewerRef}
+              className="pdf-reader-embed"
             >
-              {loading && !pageCount ? (
+              {loading && !pdfSource ? (
                 <div className="pdf-reader-message" role="status">
                   正在加载 PDF...
                 </div>
               ) : (
-                pageNumbers.map((pageNumber) => (
-                  <article
-                    key={`${document.id}-${pageNumber}`}
-                    className="pdf-reader-page"
-                    aria-label={`第 ${pageNumber} 页`}
-                  >
-                    <div className="pdf-reader-page-number">{pageNumber}</div>
-                    <canvas
-                      ref={(element) => {
-                        canvasRefs.current[pageNumber - 1] = element;
-                      }}
-                    />
-                    <div
-                      ref={(element) => {
-                        textLayerRefs.current[pageNumber - 1] = element;
-                      }}
-                      className="textLayer pdf-reader-text-layer pdf-reader-text-layer-hidden"
-                      aria-hidden="true"
-                    />
-                  </article>
-                ))
+                <PDFViewer
+                  key={`${document.id}-${pdfSource}`}
+                  config={viewerConfig}
+                  onReady={handleEmbedPdfReady}
+                  style={{ width: "100%", height: "100%" }}
+                />
               )}
             </div>
           )}
-          {selectionSummaryMenu && onCreateNoteFromSelection && (
-            <div
-              className="selection-context-menu"
-              style={{
-                left: selectionSummaryMenu.x,
-                top: selectionSummaryMenu.y,
-              }}
-              onClick={(event) => event.stopPropagation()}
-              onMouseDown={(event) => event.preventDefault()}
-            >
-              <button
-                type="button"
-                className="selection-context-menu-item"
-                onClick={handleCreateSelectionSummary}
-              >
-                创建摘要笔记
-              </button>
-            </div>
-          )}
         </section>
-        <aside className="pdf-outline-panel">
-          <header className="panel-header">
-            <h2>目录</h2>
-          </header>
-          <nav className="pdf-outline-list" aria-label="PDF 目录">
-            {outlineItems.length ? (
-              outlineItems.map((item) => {
-                const pageNumber = item.page_number;
-                const isActive = item.id === activeOutlineItemId;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className={`pdf-outline-link ${
-                      isActive ? "pdf-outline-link-active" : ""
-                    }`}
-                    style={{
-                      paddingLeft: `${Math.min(Math.max(item.level, 1), 5) * 10}px`,
-                    }}
-                    disabled={!pageNumber}
-                    title={
-                      pageNumber
-                        ? `${item.title} - 第 ${pageNumber} 页`
-                        : `${item.title} - 未定位页码`
-                    }
-                    onClick={() => handleOutlineClick(item)}
-                  >
-                    <span>{item.title}</span>
-                    {pageNumber && <small>{pageNumber}</small>}
-                  </button>
-                );
-              })
-            ) : (
-              <p className="toc-empty">
-                {outlineStatus === "loading" || outlineStatus === "extracting"
-                  ? outlineMessage || "正在加载目录"
-                  : outlineStatus === "error"
-                    ? outlineMessage || "目录加载失败"
-                    : "当前 PDF 暂无目录"}
-              </p>
-            )}
-          </nav>
-        </aside>
+        {showProjectOutline && (
+          <aside className="pdf-outline-panel">
+            <header className="panel-header">
+              <h2>目录</h2>
+            </header>
+            <nav className="pdf-outline-list" aria-label="PDF 目录">
+              {outlineItems.length ? (
+                outlineItems.map((item) => {
+                  const pageNumber = item.page_number;
+                  const isActive = item.id === activeOutlineItemId;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`pdf-outline-link ${
+                        isActive ? "pdf-outline-link-active" : ""
+                      }`}
+                      style={{
+                        paddingLeft: `${Math.min(Math.max(item.level, 1), 5) * 10}px`,
+                      }}
+                      disabled={!pageNumber}
+                      title={
+                        pageNumber
+                          ? `${item.title} - 第 ${pageNumber} 页`
+                          : `${item.title} - 未定位页码`
+                      }
+                      onClick={() => handleOutlineClick(item)}
+                    >
+                      <span>{item.title}</span>
+                      {pageNumber && <small>{pageNumber}</small>}
+                    </button>
+                  );
+                })
+              ) : (
+                <p className="toc-empty">
+                  {outlineStatus === "loading" || outlineStatus === "extracting"
+                    ? outlineMessage || "正在加载目录"
+                    : outlineStatus === "error"
+                      ? outlineMessage || "目录加载失败"
+                      : "当前 PDF 暂无目录"}
+                </p>
+              )}
+            </nav>
+          </aside>
+        )}
       </div>
     </main>
   );

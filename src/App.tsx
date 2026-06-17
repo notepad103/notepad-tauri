@@ -321,6 +321,7 @@ function App() {
             <div className="editor-workspace">
               <PdfReader
                 document={pdfDocument}
+                showProjectOutline={noteDetail.note_type !== "pdf_note"}
                 termCount={noteAi.termPanelTerms.length}
                 termSidebarOpen={termSidebarOpen}
                 onReadingChange={updatePdfReadingPosition}
