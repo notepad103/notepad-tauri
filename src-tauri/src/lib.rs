@@ -20,7 +20,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             pdf_vector::install_bundled_embedding_models(&app_data_dir, resource_dir.as_deref())?;
             std::env::set_current_dir(app_data_dir)?;
             base::sql::init_db()?;
-            pdf_vector::init_pdf_vector_tables()?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

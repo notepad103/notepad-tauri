@@ -9,6 +9,7 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::OnceLock;
+use std::time::UNIX_EPOCH;
 use tauri::ipc::Channel;
 
 const SQLITE_NAME: &str = "notepad.db";
@@ -25,6 +26,7 @@ const HF_ENDPOINT_ENV: &str = "HF_ENDPOINT";
 const FALLBACK_HF_ENDPOINT: &str = "https://hf-mirror.com";
 const DEFAULT_USE_HF_MIRROR_ENV: &str = "NOTE_EMBEDDING_USE_HF_MIRROR";
 const BUNDLED_EMBEDDING_MODELS_DIR: &str = "resources/embedding-models";
+const BUNDLED_EMBEDDING_INSTALL_MARKER: &str = ".bundled-embedding-models-installed";
 
 static SQLITE_VEC_REGISTRATION: OnceLock<Result<(), String>> = OnceLock::new();
 
@@ -89,7 +91,13 @@ pub fn install_bundled_embedding_models(
     let target_dir = app_data_dir.join(EMBEDDING_CACHE_DIR);
     for source_dir in bundled_embedding_model_dirs(resource_dir) {
         if source_dir.is_dir() {
+            let signature = dir_signature(&source_dir)?;
+            if bundled_install_is_current(&target_dir, &signature)? {
+                return Ok(());
+            }
             copy_dir_contents(&source_dir, &target_dir)?;
+            write_bundled_install_marker(&target_dir, &signature)?;
+            return Ok(());
         }
     }
     Ok(())
@@ -526,6 +534,87 @@ fn copy_dir_contents(source: &Path, target: &Path) -> Result<(), String> {
                 )
             })?;
         }
+    }
+
+    Ok(())
+}
+
+fn bundled_install_is_current(target_dir: &Path, signature: &str) -> Result<bool, String> {
+    let marker_path = target_dir.join(BUNDLED_EMBEDDING_INSTALL_MARKER);
+    match std::fs::read_to_string(&marker_path) {
+        Ok(installed_signature) => Ok(installed_signature.trim() == signature),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(format!(
+            "读取 embedding 模型安装标记失败：{}：{err}",
+            marker_path.to_string_lossy()
+        )),
+    }
+}
+
+fn write_bundled_install_marker(target_dir: &Path, signature: &str) -> Result<(), String> {
+    std::fs::create_dir_all(target_dir).map_err(|err| {
+        format!(
+            "创建 embedding 模型缓存目录失败：{}：{err}",
+            target_dir.to_string_lossy()
+        )
+    })?;
+    let marker_path = target_dir.join(BUNDLED_EMBEDDING_INSTALL_MARKER);
+    std::fs::write(&marker_path, signature).map_err(|err| {
+        format!(
+            "写入 embedding 模型安装标记失败：{}：{err}",
+            marker_path.to_string_lossy()
+        )
+    })
+}
+
+fn dir_signature(dir: &Path) -> Result<String, String> {
+    let mut file_count = 0usize;
+    let mut total_size = 0u64;
+    let mut newest_modified = 0u64;
+
+    collect_dir_signature(dir, &mut file_count, &mut total_size, &mut newest_modified)?;
+    Ok(format!("{file_count}:{total_size}:{newest_modified}"))
+}
+
+fn collect_dir_signature(
+    dir: &Path,
+    file_count: &mut usize,
+    total_size: &mut u64,
+    newest_modified: &mut u64,
+) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir).map_err(|err| {
+        format!(
+            "读取内置 embedding 模型目录失败：{}：{err}",
+            dir.to_string_lossy()
+        )
+    })? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let path = entry.path();
+        let metadata = std::fs::metadata(&path).map_err(|err| {
+            format!(
+                "读取内置 embedding 模型文件失败：{}：{err}",
+                path.to_string_lossy()
+            )
+        })?;
+
+        if metadata.is_dir() {
+            collect_dir_signature(&path, file_count, total_size, newest_modified)?;
+            continue;
+        }
+
+        if !metadata.is_file() {
+            continue;
+        }
+
+        *file_count += 1;
+        *total_size += metadata.len();
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        *newest_modified = (*newest_modified).max(modified);
     }
 
     Ok(())
