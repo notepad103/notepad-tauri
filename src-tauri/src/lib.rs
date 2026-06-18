@@ -16,6 +16,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&app_data_dir)?;
+            let resource_dir = app.path().resource_dir().ok();
+            pdf_vector::install_bundled_embedding_models(&app_data_dir, resource_dir.as_deref())?;
             std::env::set_current_dir(app_data_dir)?;
             base::sql::init_db()?;
             pdf_vector::init_pdf_vector_tables()?;
@@ -35,6 +37,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             base::sql::get_db_path,
             base::sql::get_groups,
             base::sql::get_notes,
+            base::sql::search_notes,
             base::sql::update_group,
             base::sql::delete_group,
             base::sql::add_notes,

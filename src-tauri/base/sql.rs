@@ -8,6 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const SQLITE_NAME: &str = "notepad.db";
 const PDF_STORAGE_DIR: &str = "pdfs";
 const CATEGORY_NAME_MAX_LENGTH: usize = 20;
+const GLOBAL_SEARCH_MAX_RESULTS: usize = 60;
+const GLOBAL_SEARCH_SNIPPET_RADIUS: usize = 42;
 
 static DB: LazyLock<Mutex<Connection>> =
     LazyLock::new(|| Mutex::new(Connection::open(SQLITE_NAME).expect("failed to open database")));
@@ -34,6 +36,24 @@ pub struct Note {
     is_deleted: bool,
     is_pinned: bool,
     created_at: Option<i64>,
+}
+
+#[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteSearchResult {
+    note: Note,
+    category_label: String,
+    type_label: String,
+    score: i64,
+    snippet: String,
+}
+
+#[derive(Clone, Debug)]
+struct PdfChunkSearchMatch {
+    content: String,
+    match_index: usize,
+    page_start: i64,
+    page_end: i64,
 }
 
 #[derive(serde::Serialize, Debug)]
@@ -351,6 +371,162 @@ fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
         is_pinned: row.get::<_, i64>(9)? != 0,
         created_at: row.get(10)?,
     })
+}
+
+fn normalize_search_text(text: &str) -> String {
+    text.trim().to_lowercase()
+}
+
+fn find_match_index(text: &str, query: &str) -> Option<usize> {
+    let normalized = normalize_search_text(text);
+    normalized
+        .find(query)
+        .map(|byte_index| normalized[..byte_index].chars().count())
+}
+
+fn compact_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn strip_html_tags(content: &str) -> String {
+    let mut output = String::with_capacity(content.len());
+    let mut in_tag = false;
+
+    for ch in content.chars() {
+        match ch {
+            '<' => {
+                in_tag = true;
+                output.push(' ');
+            }
+            '>' => {
+                in_tag = false;
+                output.push(' ');
+            }
+            _ if !in_tag => output.push(ch),
+            _ => {}
+        }
+    }
+
+    output
+}
+
+fn markdown_to_plain_text(content: &str) -> String {
+    let mut output = String::with_capacity(content.len());
+    let mut chars = content.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '[' | ']' | '(' | ')' | '*' | '_' | '`' | '~' | '>' | '#' | '-' | '!' => {
+                output.push(' ');
+            }
+            _ => output.push(ch),
+        }
+    }
+
+    compact_text(&output)
+}
+
+fn content_to_plain_text(content: &str) -> String {
+    if content.contains('<') && content.contains('>') {
+        compact_text(&strip_html_tags(content))
+    } else {
+        markdown_to_plain_text(content)
+    }
+}
+
+fn get_search_snippet(text: &str, match_index: Option<usize>) -> String {
+    let compact = compact_text(text);
+    if compact.is_empty() {
+        return "无正文内容".to_string();
+    }
+
+    let chars = compact.chars().collect::<Vec<_>>();
+    let char_count = chars.len();
+
+    let Some(index) = match_index else {
+        if char_count > GLOBAL_SEARCH_SNIPPET_RADIUS * 2 {
+            return format!(
+                "{}...",
+                chars
+                    .iter()
+                    .take(GLOBAL_SEARCH_SNIPPET_RADIUS * 2)
+                    .collect::<String>()
+            );
+        }
+        return compact;
+    };
+
+    let start = index.saturating_sub(GLOBAL_SEARCH_SNIPPET_RADIUS);
+    let end = (index + GLOBAL_SEARCH_SNIPPET_RADIUS).min(char_count);
+    let prefix = if start > 0 { "..." } else { "" };
+    let suffix = if end < char_count { "..." } else { "" };
+    format!(
+        "{prefix}{}{suffix}",
+        chars[start..end].iter().collect::<String>()
+    )
+}
+
+fn note_type_label(note_type: &str) -> &str {
+    match note_type {
+        "summary" => "普通总结笔记",
+        "note_summary" => "摘要笔记",
+        "pdf_note" => "PDF 笔记",
+        "pdf_summary" => "PDF 总结笔记",
+        "web_summary" => "网页总结笔记",
+        "term_article" => "名词扩展文章",
+        _ => "普通笔记",
+    }
+}
+
+fn find_pdf_chunk_matches(
+    conn: &Connection,
+    pdf_document_ids: &[i64],
+    query: &str,
+) -> Result<HashMap<i64, PdfChunkSearchMatch>, String> {
+    if pdf_document_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut matches = HashMap::new();
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT pdf_document_id, page_start, page_end, content
+            FROM pdf_chunks
+            WHERE pdf_document_id = ?1
+            ORDER BY chunk_index, id
+            "#,
+        )
+        .map_err(|err| err.to_string())?;
+
+    for pdf_document_id in pdf_document_ids {
+        let rows = stmt
+            .query_map([pdf_document_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|err| err.to_string())?;
+
+        for row in rows {
+            let (document_id, page_start, page_end, content) =
+                row.map_err(|err| err.to_string())?;
+            if let Some(match_index) = find_match_index(&content, query) {
+                matches.entry(document_id).or_insert(PdfChunkSearchMatch {
+                    content,
+                    match_index,
+                    page_start,
+                    page_end,
+                });
+                break;
+            }
+        }
+    }
+
+    Ok(matches)
 }
 
 fn validate_group_label(label: &str) -> Result<(), String> {
@@ -939,6 +1115,144 @@ pub fn get_notes() -> Result<Vec<Note>, String> {
 
     let rows = stmt.query_map([], row_to_note).map_err(|e| e.to_string())?;
     rows.map(|row| row.map_err(|e| e.to_string())).collect()
+}
+
+#[tauri::command]
+pub fn search_notes(
+    query: String,
+    max_results: Option<usize>,
+) -> Result<Vec<NoteSearchResult>, String> {
+    let query = normalize_search_text(&query);
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let limit = max_results
+        .unwrap_or(GLOBAL_SEARCH_MAX_RESULTS)
+        .clamp(1, GLOBAL_SEARCH_MAX_RESULTS);
+    let conn = DB.lock().unwrap();
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT
+                notes.id,
+                notes.group_id,
+                notes.note_type,
+                notes.pdf_document_id,
+                notes.source_note_id,
+                notes.source_term,
+                notes.title,
+                notes.content,
+                notes.is_deleted,
+                notes.is_pinned,
+                notes.created_at,
+                COALESCE(note_groups.label, '')
+            FROM notes
+            LEFT JOIN note_groups ON note_groups.id = notes.group_id
+            WHERE notes.is_deleted = 0
+            "#,
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([], |row| Ok((row_to_note(row)?, row.get::<_, String>(11)?)))
+        .map_err(|e| e.to_string())?;
+
+    let mut note_rows = Vec::new();
+    for row in rows {
+        note_rows.push(row.map_err(|e| e.to_string())?);
+    }
+
+    let mut pdf_document_ids = note_rows
+        .iter()
+        .filter_map(|(note, _)| note.pdf_document_id)
+        .collect::<Vec<_>>();
+    pdf_document_ids.sort_unstable();
+    pdf_document_ids.dedup();
+    let pdf_chunk_matches = find_pdf_chunk_matches(&conn, &pdf_document_ids, &query)?;
+
+    let mut results = Vec::new();
+    for (note, category_label) in note_rows {
+        let type_label = note_type_label(&note.note_type).to_string();
+        let pdf_chunk_match = note
+            .pdf_document_id
+            .and_then(|document_id| pdf_chunk_matches.get(&document_id));
+        let plain_content = if pdf_chunk_match.is_some() {
+            String::new()
+        } else {
+            content_to_plain_text(&note.content)
+        };
+        let title_match_index = find_match_index(&note.title, &query);
+        let content_match_index = pdf_chunk_match
+            .map(|chunk_match| chunk_match.match_index)
+            .or_else(|| {
+                if note.pdf_document_id.is_some() {
+                    None
+                } else {
+                    find_match_index(&plain_content, &query)
+                }
+            });
+        let category_match_index = find_match_index(&category_label, &query);
+        let type_match_index = find_match_index(&type_label, &query);
+
+        if title_match_index.is_none()
+            && content_match_index.is_none()
+            && category_match_index.is_none()
+            && type_match_index.is_none()
+        {
+            continue;
+        }
+
+        let snippet = if let Some(chunk_match) = pdf_chunk_match {
+            let page_label = if chunk_match.page_start == chunk_match.page_end {
+                format!("第 {} 页", chunk_match.page_start)
+            } else {
+                format!("第 {}-{} 页", chunk_match.page_start, chunk_match.page_end)
+            };
+            format!(
+                "{}：{}",
+                page_label,
+                get_search_snippet(&chunk_match.content, Some(chunk_match.match_index))
+            )
+        } else if content_match_index.is_some() {
+            get_search_snippet(&plain_content, content_match_index)
+        } else if note.pdf_document_id.is_some() {
+            "PDF 切片未命中正文内容".to_string()
+        } else {
+            get_search_snippet(&note.content, None)
+        };
+        let score = match title_match_index {
+            Some(0) => 80,
+            Some(_) => 60,
+            None => 0,
+        } + if content_match_index.is_some() { 30 } else { 0 }
+            + if category_match_index.is_some() {
+                12
+            } else {
+                0
+            }
+            + if type_match_index.is_some() { 8 } else { 0 }
+            + if note.is_pinned { 4 } else { 0 };
+
+        results.push(NoteSearchResult {
+            note,
+            category_label,
+            type_label,
+            score,
+            snippet,
+        });
+    }
+
+    results.sort_by(|a, b| {
+        b.score.cmp(&a.score).then_with(|| {
+            b.note
+                .created_at
+                .unwrap_or(0)
+                .cmp(&a.note.created_at.unwrap_or(0))
+        })
+    });
+    results.truncate(limit);
+    Ok(results)
 }
 
 #[tauri::command]

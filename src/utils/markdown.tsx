@@ -1,8 +1,13 @@
-import type { NoteSection } from "../mock/notes";
+import type { NoteSection } from "../types/notes";
+import {
+  EMPTY_NOTE_PARAGRAPH,
+  EMPTY_NOTE_PREVIEW,
+} from "../constants/notes";
 
 type MarkdownBlock =
   | { type: "heading"; level: 1 | 2 | 3; text: string }
   | { type: "paragraph"; lines: string[] }
+  | { type: "blockquote"; lines: string[] }
   | { type: "list"; ordered: boolean; items: string[] }
   | { type: "code"; code: string };
 
@@ -20,12 +25,16 @@ function safeHref(href: string): string {
   return "#";
 }
 
+export function safeMarkdownUrl(url: string): string {
+  return url.replace(/\s/g, "%20").replace(/\)/g, "%29");
+}
+
 function safeImageSrc(src: string): string {
   if (/^(https?:|data:image\/)/i.test(src)) return src;
   return "";
 }
 
-function escapeHtml(text: string): string {
+export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -106,7 +115,7 @@ function htmlToSections(html: string): NoteSection[] {
           id: "content",
           heading: "内容",
           level: 2,
-          paragraphs: ["暂无内容，点击开始记录..."],
+          paragraphs: [EMPTY_NOTE_PARAGRAPH],
         },
       ];
 }
@@ -120,6 +129,17 @@ export function markdownToPlainText(markdown: string): string {
     .replace(/\[(.*?)\]\(.*?\)/g, "$1")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+export function contentToPlainText(content: string): string {
+  return isHtmlContent(content)
+    ? htmlToPlainText(content)
+    : markdownToPlainText(content);
+}
+
+export function appendMarkdownSection(current: string, next: string): string {
+  if (!next) return current;
+  return current ? `${current}\n\n${next}` : next;
 }
 
 function renderInlineHtml(text: string): string {
@@ -175,6 +195,13 @@ export function markdownToHtml(markdown: string): string {
         return `<${tag}>${items}</${tag}>`;
       }
 
+      if (block.type === "blockquote") {
+        const content = block.lines
+          .map((line) => `<p>${renderInlineHtml(line)}</p>`)
+          .join("");
+        return `<blockquote>${content}</blockquote>`;
+      }
+
       if (block.type === "code") {
         return `<pre><code>${escapeHtml(block.code)}</code></pre>`;
       }
@@ -223,7 +250,7 @@ function markdownToSections(markdown: string): NoteSection[] {
           id: "content",
           heading: "内容",
           level: 2,
-          paragraphs: ["暂无内容，点击开始记录..."],
+          paragraphs: [EMPTY_NOTE_PARAGRAPH],
         },
       ];
 }
@@ -232,6 +259,7 @@ function parseBlocks(markdown: string): MarkdownBlock[] {
   const blocks: MarkdownBlock[] = [];
   const lines = markdown.split(/\r?\n/);
   let paragraph: string[] = [];
+  let blockquote: string[] = [];
   let list: { ordered: boolean; items: string[] } | null = null;
   let code: string[] = [];
   let inCode = false;
@@ -240,6 +268,12 @@ function parseBlocks(markdown: string): MarkdownBlock[] {
     if (!paragraph.length) return;
     blocks.push({ type: "paragraph", lines: paragraph });
     paragraph = [];
+  };
+
+  const flushBlockquote = () => {
+    if (!blockquote.length) return;
+    blocks.push({ type: "blockquote", lines: blockquote });
+    blockquote = [];
   };
 
   const flushList = () => {
@@ -251,6 +285,7 @@ function parseBlocks(markdown: string): MarkdownBlock[] {
   lines.forEach((line) => {
     if (line.trim().startsWith("```")) {
       flushParagraph();
+      flushBlockquote();
       flushList();
       if (inCode) {
         blocks.push({ type: "code", code: code.join("\n") });
@@ -270,6 +305,7 @@ function parseBlocks(markdown: string): MarkdownBlock[] {
     const heading = /^(#{1,3})\s+(.+)$/.exec(line.trim());
     if (heading) {
       flushParagraph();
+      flushBlockquote();
       flushList();
       blocks.push({
         type: "heading",
@@ -279,11 +315,20 @@ function parseBlocks(markdown: string): MarkdownBlock[] {
       return;
     }
 
+    const quoteLine = /^>\s?(.*)$/.exec(line.trim());
+    if (quoteLine) {
+      flushParagraph();
+      flushList();
+      blockquote.push(quoteLine[1]);
+      return;
+    }
+
     const orderedItem = /^\d+\.\s+(.+)$/.exec(line.trim());
     const unorderedItem = /^[-*]\s+(.+)$/.exec(line.trim());
     const item = orderedItem?.[1] ?? unorderedItem?.[1];
     if (item) {
       flushParagraph();
+      flushBlockquote();
       const ordered = Boolean(orderedItem);
       if (!list || list.ordered !== ordered) {
         flushList();
@@ -295,15 +340,18 @@ function parseBlocks(markdown: string): MarkdownBlock[] {
 
     if (!line.trim()) {
       flushParagraph();
+      flushBlockquote();
       flushList();
       return;
     }
 
+    flushBlockquote();
     flushList();
     paragraph.push(line.trim());
   });
 
   flushParagraph();
+  flushBlockquote();
   flushList();
   if (inCode) blocks.push({ type: "code", code: code.join("\n") });
 
@@ -311,10 +359,8 @@ function parseBlocks(markdown: string): MarkdownBlock[] {
 }
 
 export function normalizePreview(markdown: string): string {
-  const text = isHtmlContent(markdown)
-    ? htmlToPlainText(markdown)
-    : markdownToPlainText(markdown);
-  return text || "点击开始记录...";
+  const text = contentToPlainText(markdown);
+  return text || EMPTY_NOTE_PREVIEW;
 }
 
 export function contentToSections(content: string): NoteSection[] {

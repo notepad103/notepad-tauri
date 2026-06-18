@@ -1,6 +1,6 @@
 import { useStore } from "@tanstack/react-store";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import type { NoteDetail } from "../mock/notes";
+import type { NoteDetail } from "../types/notes";
 import { useAppActions } from "../context/AppActionsContext";
 import { notesStore } from "../store/notes";
 import { sidebarStore } from "../store/sidebar";
@@ -172,7 +172,7 @@ export default function EditorToolbar({
                   void onCreateNoteSummary();
                 }}
               >
-                {noteSummaryLoading ? "摘要中..." : "摘要笔记"}
+                {noteSummaryLoading ? "总结中..." : "总结笔记"}
               </button>
               <button
                 type="button"

@@ -1,5 +1,6 @@
 import { markdownToHtml } from "../utils/markdown";
-import KnowledgeGraphView, { type KnowledgeGraph } from "./KnowledgeGraphView";
+import KnowledgeGraphView from "./KnowledgeGraphView";
+import type { KnowledgeGraph } from "../types/knowledge";
 
 interface TermExplainDialogProps {
   open: boolean;

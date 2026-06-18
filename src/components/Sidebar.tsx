@@ -1,10 +1,9 @@
 import { useState, useEffect } from "react";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import { type Category } from "../mock/notes";
+import type { Category } from "../types/notes";
 import { sidebarStore } from "../store/sidebar";
 import { useStore } from "@tanstack/react-store";
-
-const CATEGORY_NAME_MAX_LENGTH = 20;
+import { CATEGORY_NAME_MAX_LENGTH } from "../constants/sidebar";
 
 interface SidebarProps {
   settingsActive?: boolean;

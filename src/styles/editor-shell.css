@@ -1,0 +1,91 @@
+/* ─── Editor ─── */
+.editor-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  background: #fff;
+  min-width: 0;
+  min-height: 0;
+}
+
+.editor-empty-panel {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+  background: #fff;
+}
+
+.editor-empty-content {
+  display: flex;
+  width: min(420px, 100%);
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.editor-empty-illustration {
+  width: 96px;
+  height: 108px;
+  margin-bottom: 22px;
+}
+
+.editor-empty-illustration::before {
+  top: 34px;
+}
+
+.editor-empty-illustration::after {
+  top: 48px;
+  right: 36px;
+}
+
+.editor-empty-illustration span {
+  left: 14px;
+  right: 44px;
+  top: 62px;
+}
+
+.editor-empty-content h2 {
+  margin: 0 0 10px;
+  color: #111827;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.editor-empty-content p {
+  margin: 0;
+  color: #6b7280;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.editor-empty-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+  margin-top: 22px;
+}
+
+.editor-empty-primary {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 44px;
+  font-size: 14px;
+}
+
+.editor-empty-secondary {
+  color: #6b7280;
+  border-color: transparent;
+  background: transparent;
+}
+
+.editor-empty-secondary:hover {
+  color: #2563eb;
+  border-color: #dbeafe;
+  background: #eff6ff;
+}

@@ -1,5 +1,6 @@
 import { useState } from "react";
-import type { NoteListItem, NoteType } from "../mock/notes";
+import { NOTE_TYPE_ICON } from "../constants/notes";
+import type { NoteListItem } from "../types/notes";
 
 interface TermItem {
   term: string;
@@ -23,15 +24,6 @@ interface TermSidebarProps {
   onOpenReference?: (noteId: string) => void;
   onRegenerateTerms?: () => void | Promise<void>;
 }
-
-const NOTE_TYPE_ICON: Record<NoteType, { label: string; title: string }> = {
-  normal: { label: "N", title: "普通笔记" },
-  note_summary: { label: "A", title: "摘要笔记" },
-  pdf_note: { label: "P", title: "PDF 关联笔记" },
-  pdf_summary: { label: "S", title: "PDF 总结笔记" },
-  web_summary: { label: "W", title: "网页总结笔记" },
-  term_article: { label: "T", title: "名词扩展文章" },
-};
 
 export default function TermSidebar({
   open,

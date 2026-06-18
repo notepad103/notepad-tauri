@@ -6,7 +6,7 @@ use rusqlite::{
     params, Connection, OptionalExtension,
 };
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::OnceLock;
 use tauri::ipc::Channel;
@@ -24,6 +24,7 @@ const AI_CONTEXT_CHUNK_CHAR_LIMIT: usize = 2_400;
 const HF_ENDPOINT_ENV: &str = "HF_ENDPOINT";
 const FALLBACK_HF_ENDPOINT: &str = "https://hf-mirror.com";
 const DEFAULT_USE_HF_MIRROR_ENV: &str = "NOTE_EMBEDDING_USE_HF_MIRROR";
+const BUNDLED_EMBEDDING_MODELS_DIR: &str = "resources/embedding-models";
 
 static SQLITE_VEC_REGISTRATION: OnceLock<Result<(), String>> = OnceLock::new();
 
@@ -79,6 +80,19 @@ struct EmbeddingRuntime {
     model_name: String,
     dimensions: usize,
     model: TextEmbedding,
+}
+
+pub fn install_bundled_embedding_models(
+    app_data_dir: &Path,
+    resource_dir: Option<&Path>,
+) -> Result<(), String> {
+    let target_dir = app_data_dir.join(EMBEDDING_CACHE_DIR);
+    for source_dir in bundled_embedding_model_dirs(resource_dir) {
+        if source_dir.is_dir() {
+            copy_dir_contents(&source_dir, &target_dir)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn init_pdf_vector_tables() -> Result<(), String> {
@@ -365,6 +379,7 @@ impl EmbeddingRuntime {
             .with_cache_dir(cache_dir.clone())
             .with_show_download_progress(false)
             .with_intra_threads(2);
+
         let model = match TextEmbedding::try_new(options.clone()) {
             Ok(model) => model,
             Err(primary_err) => {
@@ -448,6 +463,72 @@ fn embedding_cache_dir() -> Result<PathBuf, String> {
     std::env::current_dir()
         .map(|dir| dir.join(EMBEDDING_CACHE_DIR))
         .map_err(|err| err.to_string())
+}
+
+fn bundled_embedding_model_dirs(resource_dir: Option<&Path>) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(resource_dir) = resource_dir {
+        dirs.push(resource_dir.join(BUNDLED_EMBEDDING_MODELS_DIR));
+        dirs.push(resource_dir.join(EMBEDDING_CACHE_DIR));
+    }
+    if let Some(manifest_dir) = option_env!("CARGO_MANIFEST_DIR") {
+        dirs.push(PathBuf::from(manifest_dir).join(BUNDLED_EMBEDDING_MODELS_DIR));
+    }
+    dirs
+}
+
+fn copy_dir_contents(source: &Path, target: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(target).map_err(|err| {
+        format!(
+            "创建 embedding 模型缓存目录失败：{}：{err}",
+            target.to_string_lossy()
+        )
+    })?;
+
+    for entry in std::fs::read_dir(source).map_err(|err| {
+        format!(
+            "读取内置 embedding 模型目录失败：{}：{err}",
+            source.to_string_lossy()
+        )
+    })? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        let metadata = std::fs::metadata(&source_path).map_err(|err| {
+            format!(
+                "读取内置 embedding 模型文件失败：{}：{err}",
+                source_path.to_string_lossy()
+            )
+        })?;
+
+        if metadata.is_dir() {
+            copy_dir_contents(&source_path, &target_path)?;
+            continue;
+        }
+
+        if !metadata.is_file() {
+            continue;
+        }
+
+        let should_copy = match std::fs::metadata(&target_path) {
+            Ok(target_metadata) => target_metadata.len() != metadata.len(),
+            Err(_) => true,
+        };
+        if should_copy {
+            if let Some(parent) = target_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+            }
+            std::fs::copy(&source_path, &target_path).map_err(|err| {
+                format!(
+                    "复制内置 embedding 模型文件失败：{} -> {}：{err}",
+                    source_path.to_string_lossy(),
+                    target_path.to_string_lossy()
+                )
+            })?;
+        }
+    }
+
+    Ok(())
 }
 
 fn current_embedding_model() -> Result<EmbeddingModel, String> {

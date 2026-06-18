@@ -1,63 +1,5 @@
-export type NavFilter = "all" | "today" | "important";
-export type NoteType =
-  | "normal"
-  | "note_summary"
-  | "pdf_note"
-  | "pdf_summary"
-  | "web_summary"
-  | "term_article";
-
-export interface NavItem {
-  id: NavFilter;
-  label: string;
-  count: number;
-}
-
-export interface Category {
-  id: string;
-  label: string;
-  count: number;
-}
-
-export interface NoteListItem {
-  id: string;
-  note_id?: number;
-  group_id: number | null;
-  note_type: NoteType;
-  pdf_document_id?: number | null;
-  source_note_id?: number | null;
-  source_term?: string | null;
-  title: string;
-  content: string;
-  is_deleted: boolean;
-  is_pinned: boolean;
-  created_at: number | null;
-  preview: string;
-  display_time: string;
-}
-
-export interface NoteSection {
-  id: string;
-  heading: string;
-  level: 1 | 2;
-  paragraphs: string[];
-}
-
-export interface NoteDetail {
-  id: string;
-  note_id?: number;
-  group_id: number | null;
-  note_type: NoteType;
-  pdf_document_id?: number | null;
-  source_note_id?: number | null;
-  source_term?: string | null;
-  title: string;
-  content?: string;
-  is_deleted: boolean;
-  is_pinned: boolean;
-  created_at: number | null;
-  sections: NoteSection[];
-}
+import type { NavItem, NoteDetail, TocItem } from "../types/notes";
+import { DEFAULT_NOTE_TITLE, EMPTY_NOTE_PARAGRAPH } from "../constants/notes";
 
 export const navItems: NavItem[] = [
   { id: "all", label: "全部笔记", count: 0 },
@@ -73,7 +15,7 @@ export function createEmptyNoteDetail(id = ""): NoteDetail {
     pdf_document_id: null,
     source_note_id: null,
     source_term: null,
-    title: "未命名笔记",
+    title: DEFAULT_NOTE_TITLE,
     content: "",
     is_deleted: false,
     is_pinned: false,
@@ -83,13 +25,13 @@ export function createEmptyNoteDetail(id = ""): NoteDetail {
         id: "content",
         heading: "内容",
         level: 2,
-        paragraphs: ["暂无内容，点击开始记录..."],
+        paragraphs: [EMPTY_NOTE_PARAGRAPH],
       },
     ],
   };
 }
 
-export function buildToc(detail: NoteDetail | null) {
+export function buildToc(detail: NoteDetail | null): TocItem[] {
   if (!detail) return [];
 
   return [

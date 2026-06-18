@@ -1,59 +1,33 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { NoteDetail, NoteListItem } from "../mock/notes";
 import { notesStore } from "../store/notes";
 import { sidebarStore } from "../store/sidebar";
-import type { KnowledgeGraph } from "../components/KnowledgeGraphView";
+import type { KnowledgeGraph } from "../types/knowledge";
+import type {
+  AiStreamEvent,
+  NoteTerm,
+  SelectedTerm,
+  SummaryResponse,
+  TermAiSections,
+  UseNoteAiOptions,
+} from "../types/ai";
+import type { PdfCaptureNotePayload } from "../types/pdf";
 import {
-  htmlToPlainText,
-  isHtmlContent,
+  appendMarkdownSection,
+  contentToPlainText,
+  escapeHtml,
   markdownToHtml,
-  markdownToPlainText,
 } from "../utils/markdown";
-import { buildNoteSummaryContent } from "../utils/readingNotes";
-
-interface SummaryResponse {
-  title: string;
-  content: string;
-}
-
-interface NoteTerm {
-  id?: number;
-  note_id?: number;
-  term: string;
-  explanation: string;
-  context: string;
-  sort: number;
-  created_at?: number;
-}
-
-type SelectedTerm = Pick<NoteTerm, "term" | "explanation" | "context">;
-
-type StreamEvent =
-  | { type: "Delta"; payload: string }
-  | { type: "Done" }
-  | { type: "Error"; payload: string };
-
-interface TermAiSections {
-  supplement: string;
-  scenarios: string;
-}
-
-interface UseNoteAiOptions {
-  selectedNoteId: string;
-  noteDetail: NoteDetail;
-  notesList: NoteListItem[];
-  clearPdfDocument: () => void;
-  onNoteCreated: (id: string) => void;
-}
-
-const TERM_SUPPLEMENT_TITLE = "结合文章的补充说明";
-const TERM_SCENARIOS_TITLE = "适用场景和示例";
-
-function appendMarkdownSection(current: string, next: string): string {
-  if (!next) return current;
-  return current ? `${current}\n\n${next}` : next;
-}
+import {
+  buildNoteSummaryContent,
+  buildNoteSummaryTitle,
+  buildPdfCaptureSummaryContent,
+  buildSelectionSummaryContent,
+} from "../utils/readingNotes";
+import {
+  TERM_SCENARIOS_TITLE,
+  TERM_SUPPLEMENT_TITLE,
+} from "../constants/ai";
 
 function splitTermAiSections(markdown: string): TermAiSections {
   const trimmed = markdown.trim();
@@ -94,15 +68,6 @@ function splitTermAiSections(markdown: string): TermAiSections {
   return sections;
 }
 
-function escapeHtmlValue(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
 function graphToArticleHtml(graph: KnowledgeGraph): string {
   const width = 760;
   const height = 360;
@@ -134,7 +99,7 @@ function graphToArticleHtml(graph: KnowledgeGraph): string {
       if (!source || !target) return "";
       const labelX = (source.x + target.x) / 2;
       const labelY = (source.y + target.y) / 2;
-      return `<g><line x1="${source.x}" y1="${source.y}" x2="${target.x}" y2="${target.y}" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#graph-arrow)" /><text x="${labelX}" y="${labelY - 4}" fill="#64748b" font-size="11" text-anchor="middle" paint-order="stroke" stroke="#fff" stroke-width="4">${escapeHtmlValue(edge.label || `关系 ${index + 1}`)}</text></g>`;
+      return `<g><line x1="${source.x}" y1="${source.y}" x2="${target.x}" y2="${target.y}" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#graph-arrow)" /><text x="${labelX}" y="${labelY - 4}" fill="#64748b" font-size="11" text-anchor="middle" paint-order="stroke" stroke="#fff" stroke-width="4">${escapeHtml(edge.label || `关系 ${index + 1}`)}</text></g>`;
     })
     .join("");
   const nodesSvg = nodes
@@ -142,7 +107,7 @@ function graphToArticleHtml(graph: KnowledgeGraph): string {
       const position = positions.get(node.id);
       if (!position) return "";
       const isCenter = node.id === center?.id;
-      return `<g><circle cx="${position.x}" cy="${position.y}" r="${isCenter ? 42 : 34}" fill="${isCenter ? "#dbeafe" : "#eff6ff"}" stroke="${isCenter ? "#2563eb" : "#93c5fd"}" stroke-width="${isCenter ? 2 : 1.5}" /><text x="${position.x}" y="${position.y + 4}" fill="#1f2937" font-size="12" font-weight="600" text-anchor="middle">${escapeHtmlValue(node.label)}</text></g>`;
+      return `<g><circle cx="${position.x}" cy="${position.y}" r="${isCenter ? 42 : 34}" fill="${isCenter ? "#dbeafe" : "#eff6ff"}" stroke="${isCenter ? "#2563eb" : "#93c5fd"}" stroke-width="${isCenter ? 2 : 1.5}" /><text x="${position.x}" y="${position.y + 4}" fill="#1f2937" font-size="12" font-weight="600" text-anchor="middle">${escapeHtml(node.label)}</text></g>`;
     })
     .join("");
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="知识图谱"><rect width="${width}" height="${height}" fill="#ffffff" /><defs><marker id="graph-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#94a3b8" /></marker></defs>${edgesSvg}${nodesSvg}</svg>`;
@@ -155,7 +120,7 @@ function graphToArticleHtml(graph: KnowledgeGraph): string {
   const edgeItems = graph.edges
     .map(
       (edge) =>
-        `<li><strong>${escapeHtmlValue(edge.label)}</strong> ${escapeHtmlValue(edge.description)}</li>`,
+        `<li><strong>${escapeHtml(edge.label)}</strong> ${escapeHtml(edge.description)}</li>`,
     )
     .join("");
 
@@ -210,9 +175,7 @@ export function useNoteAi({
 
   const notePlainContent = useCallback(() => {
     const sourceContent = noteDetail.content?.trim() ?? "";
-    return isHtmlContent(sourceContent)
-      ? htmlToPlainText(sourceContent)
-      : markdownToPlainText(sourceContent);
+    return contentToPlainText(sourceContent);
   }, [noteDetail.content]);
 
   const resetTermExplain = useCallback(() => {
@@ -240,8 +203,8 @@ export function useNoteAi({
       });
       const detail = await notesStore.actions.addNote({
         group_id: noteDetail.group_id,
-        note_type: "note_summary",
-        title: summary.title || `摘要：${noteDetail.title}`,
+        note_type: "summary",
+        title: buildNoteSummaryTitle(noteDetail.title),
         content: buildNoteSummaryContent(
           summary.content,
           noteDetail.title,
@@ -272,14 +235,47 @@ export function useNoteAi({
 
   const createNoteFromSelection = useCallback(
     async (selectedText: string) => {
-      const title = selectedText.trim();
-      if (!title) return;
+      if (!selectedText.trim()) return;
 
       const detail = await notesStore.actions.addNote({
         group_id: noteDetail.group_id,
         note_type: "note_summary",
-        title,
+        title: buildNoteSummaryTitle(noteDetail.title),
+        content: buildSelectionSummaryContent(selectedText, noteDetail.title),
         source_note_id: noteDetail.note_id,
+      });
+
+      await notesStore.actions.loadNotes();
+      await sidebarStore.actions.getList();
+      resetTermExplain();
+      clearPdfDocument();
+      onNoteCreated(detail.id);
+    },
+    [
+      clearPdfDocument,
+      noteDetail.group_id,
+      noteDetail.note_id,
+      noteDetail.title,
+      onNoteCreated,
+      resetTermExplain,
+    ],
+  );
+
+  const createNoteFromPdfCapture = useCallback(
+    async (capture: PdfCaptureNotePayload) => {
+      if (!capture.imageDataUrl.trim()) return;
+
+      const detail = await notesStore.actions.addNote({
+        group_id: noteDetail.group_id,
+        note_type: "note_summary",
+        title: `引用自${capture.documentName}第${capture.pageNumber}页截图`,
+        content: buildPdfCaptureSummaryContent(
+          capture.imageDataUrl,
+          capture.documentName,
+          capture.pageNumber,
+        ),
+        source_note_id: noteDetail.note_id,
+        pdf_document_id: capture.pdfDocumentId,
       });
 
       await notesStore.actions.loadNotes();
@@ -356,7 +352,7 @@ export function useNoteAi({
 
       setTermExplainLoading(true);
       try {
-        const channel = new Channel<StreamEvent>((event) => {
+        const channel = new Channel<AiStreamEvent>((event) => {
           if (termExplainRequestId.current !== requestId) return;
           if (event.type === "Delta") {
             setTermAiExplanation((current) => current + event.payload);
@@ -524,6 +520,7 @@ export function useNoteAi({
     explainTerms,
     createNoteSummary,
     createNoteFromSelection,
+    createNoteFromPdfCapture,
     selectTerm,
     termDialog: {
       open: Boolean(selectedTerm),

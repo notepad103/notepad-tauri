@@ -17,9 +17,14 @@ import {
   SearchHighlight,
   setEditorSearch,
 } from "../extensions/SearchHighlight";
-import type { NoteDetail } from "../mock/notes";
+import type { NoteDetail } from "../types/notes";
 import { notesStore } from "../store/notes";
-import { isHtmlContent, markdownToHtml, slug } from "../utils/markdown";
+import { isHtmlContent, markdownToHtml } from "../utils/markdown";
+import {
+  readImageAsDataUrl,
+  scheduleHeadingIds,
+  sectionsToMarkdown,
+} from "../utils/editor";
 
 interface EditorContentProps {
   noteDetail: NoteDetail;
@@ -34,40 +39,6 @@ interface SelectionSummaryMenu {
   x: number;
   y: number;
   text: string;
-}
-
-function sectionsToMarkdown(noteDetail: NoteDetail): string {
-  return noteDetail.sections
-    .map((section) => {
-      const heading = `${"#".repeat(section.level)} ${section.heading}`;
-      return [heading, ...section.paragraphs].join("\n");
-    })
-    .join("\n\n");
-}
-
-function readImageAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
-
-function assignHeadingIds(container: HTMLElement | null) {
-  if (!container) return;
-
-  container.querySelectorAll("h1, h2, h3").forEach((heading, index) => {
-    const text = heading.textContent?.trim() ?? "";
-    if (!text) return;
-    heading.id = slug(text, `heading-${index}`);
-  });
-}
-
-function scheduleHeadingIds(container: HTMLElement | null) {
-  requestAnimationFrame(() => {
-    assignHeadingIds(container);
-  });
 }
 
 export default function EditorContent({
@@ -152,7 +123,7 @@ export default function EditorContent({
     const nextContent = editor ? editor.getHTML() : content;
     void notesStore.actions.updateNote(
       noteDetail.id,
-      noteDetail.title.trim() || "未命名笔记",
+      noteDetail.title.trim(),
       nextContent,
     );
   };

@@ -1,79 +1,22 @@
 import { Store } from "@tanstack/react-store";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  createEmptyNoteDetail,
-  type NoteDetail,
-  type NoteListItem,
-  type NoteType,
-} from "../mock/notes";
+import { DEFAULT_NOTE_TITLE, normalizeNoteType } from "../constants/notes";
+import { createEmptyNoteDetail } from "../mock/notes";
+import type { NoteDetail, NoteListItem } from "../types/notes";
+import type {
+  DbNote,
+  NotesActions,
+  NotesState,
+} from "../types/store";
+import { formatNoteDisplayTime } from "../utils/date";
 import { contentToSections, normalizePreview } from "../utils/markdown";
-
-interface DbNote {
-  id: number;
-  group_id: number | null;
-  note_type: NoteType;
-  pdf_document_id: number | null;
-  source_note_id: number | null;
-  source_term: string | null;
-  title: string;
-  content: string;
-  is_deleted: boolean;
-  is_pinned: boolean;
-  created_at: number | null;
-}
-
-interface NotesState {
-  list: NoteListItem[];
-  details: Record<string, NoteDetail>;
-}
-
-type AddNoteParams = {
-  group_id: number | null;
-  note_type?: NoteType;
-  title?: string;
-  content?: string;
-  source_note_id?: number | null;
-  source_term?: string | null;
-  pdf_document_id?: number | null;
-};
-
-type NotesActions = {
-  loadNotes: () => Promise<void>;
-  getNoteDetail: (id: string) => NoteDetail;
-  addNote: (params: AddNoteParams) => Promise<NoteDetail>;
-  updateNoteTitleLocal: (id: string, title: string) => void;
-  updateNote: (id: string, title: string, content: string) => Promise<void>;
-  updateNoteGroup: (id: string, group_id: number | null) => Promise<NoteDetail>;
-  updateNotePinned: (id: string, is_pinned: boolean) => Promise<NoteDetail>;
-  deleteNote: (id: string) => Promise<void>;
-};
-
-function formatNoteTime(createdAt: number | null): string {
-  if (!createdAt) return "";
-
-  const date = new Date(createdAt * 1000);
-  const today = new Date();
-  if (
-    date.getFullYear() === today.getFullYear() &&
-    date.getMonth() === today.getMonth() &&
-    date.getDate() === today.getDate()
-  ) {
-    return date.toLocaleTimeString("zh-CN", {
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    });
-  }
-
-  return `${date.getMonth() + 1}/${date.getDate()}`;
-}
 
 function toNoteListItem(note: DbNote): NoteListItem {
   return {
     id: `db-${note.id}`,
     note_id: note.id,
     group_id: note.group_id,
-    note_type: note.note_type,
+    note_type: normalizeNoteType(note.note_type),
     pdf_document_id: note.pdf_document_id,
     source_note_id: note.source_note_id,
     source_term: note.source_term,
@@ -83,7 +26,7 @@ function toNoteListItem(note: DbNote): NoteListItem {
     is_pinned: note.is_pinned,
     created_at: note.created_at,
     preview: normalizePreview(note.content),
-    display_time: formatNoteTime(note.created_at),
+    display_time: formatNoteDisplayTime(note.created_at),
   };
 }
 
@@ -92,7 +35,7 @@ function toNoteDetail(note: DbNote): NoteDetail {
     id: `db-${note.id}`,
     note_id: note.id,
     group_id: note.group_id,
-    note_type: note.note_type,
+    note_type: normalizeNoteType(note.note_type),
     pdf_document_id: note.pdf_document_id,
     source_note_id: note.source_note_id,
     source_term: note.source_term,
@@ -195,7 +138,7 @@ export const notesStore = new Store<NotesState, NotesActions>(
     addNote: async ({
       group_id,
       note_type = "normal",
-      title = "未命名笔记",
+      title = DEFAULT_NOTE_TITLE,
       content = "",
       source_note_id = null,
       source_term = null,

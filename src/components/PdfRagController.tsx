@@ -1,51 +1,16 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type * as pdfjsLib from "pdfjs-dist";
-import PdfRagPanel, {
-  type PdfRagProgress,
-  type PdfRagResult,
-  type PdfRagStatus,
-} from "./PdfRagPanel";
-
-const VECTOR_SEARCH_TOP_K = 8;
-
-interface PdfChunk {
-  id: number;
-  pdf_document_id: number;
-  chunk_index: number;
-  page_start: number;
-  page_end: number;
-  content: string;
-  char_count: number;
-  token_estimate: number;
-  content_hash: string;
-  created_at: number;
-  updated_at?: number | null;
-}
-
-interface PdfVectorIndexState {
-  pdf_document_id: number;
-  status: "ready" | "partial" | "empty" | string;
-  chunk_count: number;
-  embedding_count: number;
-  missing_embedding_count: number;
-  model: string;
-  dimensions: number;
-  cache_dir: string;
-}
-
-type StreamEvent =
-  | { type: "Delta"; payload: string }
-  | { type: "Done" }
-  | { type: "Error"; payload: string };
-
-type EnsurePdfTextChunks = (
-  activePdf: pdfjsLib.PDFDocumentProxy,
-  options: {
-    isStaleRequest: () => boolean;
-    onProgress: (message: string) => void;
-  },
-) => Promise<PdfChunk[] | null>;
+import PdfRagPanel from "./PdfRagPanel";
+import type {
+  EnsurePdfTextChunks,
+  PdfRagProgress,
+  PdfRagResult,
+  PdfRagStatus,
+  PdfStreamEvent,
+  PdfVectorIndexState,
+} from "../types/pdf";
+import { VECTOR_SEARCH_TOP_K } from "../constants/pdf";
 
 interface PdfRagControllerProps {
   chunkBusy: boolean;
@@ -206,7 +171,7 @@ export default function PdfRagController({
 
         setStatus("answering");
         setMessage(`${searchResults.length} 条相关片段，AI 回答生成中`);
-        const channel = new Channel<StreamEvent>((event) => {
+        const channel = new Channel<PdfStreamEvent>((event) => {
           if (isStaleRequest()) return;
           if (event.type === "Delta") {
             setAnswer((current) => current + event.payload);

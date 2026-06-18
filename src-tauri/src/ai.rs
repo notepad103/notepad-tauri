@@ -754,7 +754,7 @@ pub async fn summarize_note(title: String, content: String) -> Result<WebpageSum
         )
         .await?;
 
-    let fallback_title = format!("摘要：{}", title_evidence);
+    let fallback_title = format!("引用自{}笔记", title_evidence);
     let mut summary = parse_ai_note(&content, &fallback_title);
     if summary.title.is_empty() {
         summary.title = fallback_title;

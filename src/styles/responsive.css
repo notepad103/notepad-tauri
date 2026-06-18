@@ -1,0 +1,17 @@
+@media (max-width: 1100px) {
+  .settings-section {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .settings-section-meta,
+  .settings-section-panel {
+    padding: 0 20px;
+  }
+
+  .settings-input-row,
+  .settings-path-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

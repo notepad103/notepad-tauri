@@ -1,0 +1,2 @@
+export const GLOBAL_SEARCH_MAX_RESULTS = 60;
+export const GLOBAL_SEARCH_SNIPPET_RADIUS = 42;

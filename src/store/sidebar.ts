@@ -1,14 +1,8 @@
 import { Store } from "@tanstack/react-store";
 import { invoke } from "@tauri-apps/api/core";
-import { navItems, type NavItem, type Category } from "../mock/notes";
-
-interface NoteGroup {
-  id: number;
-  label: string;
-  sort: number;
-  count: number;
-  created_at: number;
-}
+import { navItems } from "../mock/notes";
+import type { Category } from "../types/notes";
+import type { NoteGroup, SidebarActions, SidebarState } from "../types/store";
 
 function toCategory(group: NoteGroup): Category {
   return {
@@ -19,22 +13,6 @@ function toCategory(group: NoteGroup): Category {
 }
 
 let listRequestId = 0;
-
-interface SidebarState {
-  fixedList: NavItem[];
-  customList: Category[];
-  selectedId: string;
-}
-
-type SidebarActions = {
-  setFixedList: (list: NavItem[]) => void;
-  setCustomList: (list: Category[]) => void;
-  setSelectedId: (id: string) => void;
-  getList: () => Promise<void>;
-  addCustomCategory: (label: string) => Promise<void>;
-  updateCustomCategory: (id: string, label: string) => Promise<void>;
-  deleteCustomCategory: (id: string) => Promise<void>;
-};
 
 export const sidebarStore = new Store<SidebarState, SidebarActions>(
   {

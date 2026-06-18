@@ -1,13 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { Category, NoteDetail } from "../mock/notes";
+import type { Category, NoteDetail } from "../types/notes";
 import { notesStore } from "../store/notes";
 import { sidebarStore } from "../store/sidebar";
-import type { PdfDocument, PdfSummary } from "../components/PdfReader";
+import type { PdfDocument, PdfSummary } from "../types/pdf";
 import { markdownToHtml } from "../utils/markdown";
 
 type StoredPdfDocument = PdfDocument;
+
+function isSamePdfPosition(
+  document: PdfDocument,
+  page: number,
+  pageCount: number,
+) {
+  return document.last_page === page && document.page_count === pageCount;
+}
 
 interface UsePdfDocumentsOptions {
   customList: Category[];
@@ -28,21 +36,48 @@ export function usePdfDocuments({
   const [pdfDocuments, setPdfDocuments] = useState<PdfDocument[]>([]);
   const [pdfLoading, setPdfLoading] = useState(false);
   const pdfPositionSaveTimer = useRef<number | null>(null);
+  const pdfDocumentRef = useRef<PdfDocument | null>(null);
+  const pdfDocumentsRef = useRef<PdfDocument[]>([]);
+
+  const setPdfDocumentList = useCallback((documents: PdfDocument[]) => {
+    pdfDocumentsRef.current = documents;
+    setPdfDocuments(documents);
+  }, []);
+
+  useEffect(() => {
+    pdfDocumentsRef.current = pdfDocuments;
+  }, [pdfDocuments]);
+
+  useEffect(() => {
+    pdfDocumentRef.current = pdfDocument;
+  }, [pdfDocument]);
 
   const loadPdfDocuments = useCallback(async () => {
     const documents = await invoke<StoredPdfDocument[]>("get_pdf_documents");
-    setPdfDocuments(documents);
+    setPdfDocumentList(documents);
     return documents;
-  }, []);
+  }, [setPdfDocumentList]);
 
   const clearPdfDocument = useCallback(() => {
+    pdfDocumentRef.current = null;
     setPdfDocument(null);
   }, []);
 
   const openPdfDocument = useCallback(
     (document: PdfDocument) => {
       onPdfActivated?.();
-      setPdfDocument(document);
+      setPdfDocument((current) => {
+        if (
+          current?.id === document.id &&
+          current.last_page === document.last_page &&
+          current.page_count === document.page_count &&
+          current.updated_at === document.updated_at
+        ) {
+          return current;
+        }
+        pdfDocumentRef.current = document;
+        return document;
+      });
     },
     [onPdfActivated],
   );
@@ -88,13 +123,15 @@ export function usePdfDocuments({
 
   const syncPdfDocumentForNote = useCallback(
     async (detail: NoteDetail) => {
-      if (!detail.pdf_document_id || detail.note_type === "pdf_summary") {
+      if (detail.note_type !== "pdf_note" || !detail.pdf_document_id) {
         setPdfDocument(null);
         return false;
       }
 
       const document =
-        pdfDocuments.find((item) => item.id === detail.pdf_document_id) ??
+        pdfDocumentsRef.current.find(
+          (item) => item.id === detail.pdf_document_id,
+        ) ??
         (await loadPdfDocuments()).find(
           (item) => item.id === detail.pdf_document_id,
         );
@@ -106,7 +143,7 @@ export function usePdfDocuments({
       openPdfDocument(document);
       return true;
     },
-    [loadPdfDocuments, openPdfDocument, pdfDocuments],
+    [loadPdfDocuments, openPdfDocument],
   );
 
   const openPdfFromPicker = useCallback(async () => {
@@ -145,7 +182,7 @@ export function usePdfDocuments({
   const openSavedPdf = useCallback(
     async (id: number) => {
       const document =
-        pdfDocuments.find((item) => item.id === id) ??
+        pdfDocumentsRef.current.find((item) => item.id === id) ??
         (await loadPdfDocuments()).find((item) => item.id === id);
       if (!document) return;
 
@@ -161,34 +198,29 @@ export function usePdfDocuments({
       onBeforeOpen,
       onNoteActivated,
       openPdfDocument,
-      pdfDocuments,
     ],
   );
 
   const updatePdfReadingPosition = useCallback(
     (page: number, pageCount: number) => {
-      const currentId = pdfDocument?.id;
+      const activeDocument = pdfDocumentRef.current;
+      const currentId = activeDocument?.id;
       if (!currentId) return;
+      if (isSamePdfPosition(activeDocument, page, pageCount)) return;
 
-      setPdfDocument((current) =>
-        current?.id === currentId
+      pdfDocumentRef.current = {
+        ...activeDocument,
+        last_page: page,
+        page_count: pageCount,
+      };
+      pdfDocumentsRef.current = pdfDocumentsRef.current.map((document) =>
+        document.id === currentId
           ? {
-              ...current,
+              ...document,
               last_page: page,
               page_count: pageCount,
             }
-          : current,
-      );
-      setPdfDocuments((current) =>
-        current.map((document) =>
-          document.id === currentId
-            ? {
-                ...document,
-                last_page: page,
-                page_count: pageCount,
-              }
-            : document,
-        ),
+          : document,
       );
 
       if (pdfPositionSaveTimer.current !== null) {
@@ -202,13 +234,30 @@ export function usePdfDocuments({
           pageCount,
         })
           .then((document) => {
-            setPdfDocument((current) =>
-              current?.id === document.id ? document : current,
-            );
+            setPdfDocument((current) => {
+              if (current?.id !== document.id) return current;
+              if (
+                current.last_page === document.last_page &&
+                current.page_count === document.page_count &&
+                current.updated_at === document.updated_at
+              ) {
+                return current;
+              }
+              pdfDocumentRef.current = document;
+              return document;
+            });
             setPdfDocuments((current) =>
-              current.map((item) =>
-                item.id === document.id ? document : item,
-              ),
+              current.map((item) => {
+                if (item.id !== document.id) return item;
+                if (
+                  item.last_page === document.last_page &&
+                  item.page_count === document.page_count &&
+                  item.updated_at === document.updated_at
+                ) {
+                  return item;
+                }
+                return document;
+              }),
             );
           })
           .catch((err) => {
@@ -216,19 +265,28 @@ export function usePdfDocuments({
           });
       }, 500);
     },
-    [pdfDocument?.id],
+    [],
   );
 
   const createPdfSummaryNote = useCallback(
     async (summary: PdfSummary) => {
       if (!pdfDocument) return;
 
+      await notesStore.actions.loadNotes();
+      const sourcePdfNote = notesStore
+        .get()
+        .list.find(
+          (note) =>
+            note.note_type === "pdf_note" &&
+            note.pdf_document_id === pdfDocument.id,
+        );
       const selectedCategory = customList.find((cat) => cat.id === selectedId);
       const detail = await notesStore.actions.addNote({
         group_id: selectedCategory ? Number(selectedCategory.id) : null,
         note_type: "pdf_summary",
         title: summary.title || `${pdfDocument.name} AI 总结`,
         content: summary.content,
+        source_note_id: sourcePdfNote?.note_id ?? null,
         pdf_document_id: pdfDocument.id,
       });
 

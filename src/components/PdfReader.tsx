@@ -7,39 +7,69 @@ import {
 } from "react";
 import {
   CommandsPlugin,
-  DocumentManagerPlugin,
   PDFViewer,
   ScrollStrategy,
+  SpreadMode,
+  SpreadPlugin,
   UIPlugin,
   ZoomMode,
+  ZoomPlugin,
   type Command,
   type PDFViewerConfig,
+  type PDFViewerRef,
   type PluginRegistry,
   type ScrollCapability,
   type ScrollPlugin,
   type SelectionCapability,
   type SelectionMenuItem,
   type SelectionPlugin,
+  type SpreadCapability,
+  type ToolbarItem,
+  type ZoomCapability,
+  type ZoomLevel,
 } from "@embedpdf/react-pdf-viewer";
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.mjs?url";
 import PdfRagController from "./PdfRagController";
 import TermToggleButton from "./TermToggleButton";
+import type {
+  LoadedPdfState,
+  PdfChunk,
+  PdfChunkStatus,
+  PdfDocument,
+  PdfCaptureNotePayload,
+  PdfOutlineItem,
+  PdfOutlineStatus,
+  PdfSummary,
+  PdfSummaryProgress,
+} from "../types/pdf";
+import {
+  buildPdfChunks,
+  extractPdfOutlineItems,
+  extractPdfPageTexts,
+  formatFileSize,
+  normalizePdfText,
+} from "../utils/pdf";
+import {
+  CREATE_SUMMARY_SELECTION_COMMAND_ID,
+  CREATE_SUMMARY_SELECTION_ITEM_ID,
+  EMBED_PDF_FULLSCREEN_COMMAND_ID,
+  EMBED_PDF_FULLSCREEN_TOOLBAR_ITEM_ID,
+  EMBED_PDF_MAIN_TOOLBAR_ID,
+  EMBED_PDF_NAV_SIDEBAR_COMMAND_ID,
+  EMBED_PDF_NAV_SIDEBAR_ID,
+  EMBED_PDF_NAV_SIDEBAR_PLACEMENT,
+  EMBED_PDF_NAV_SIDEBAR_SLOT,
+  EMBED_PDF_OUTLINE_TAB_ID,
+  EMBED_PDF_PAGE_SETTINGS_TOOLBAR_ITEM_ID,
+  EMBED_PDF_RIGHT_TOOLBAR_GROUP_ID,
+  EMBED_PDF_SCREENSHOT_COMMAND_ID,
+  EMBED_PDF_SCREENSHOT_TOOLBAR_ITEM_ID,
+} from "../constants/pdf";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
-
-export interface PdfDocument {
-  id: number;
-  name: string;
-  original_path: string;
-  stored_path: string;
-  size: number;
-  last_page: number;
-  page_count: number;
-  created_at: number;
-  updated_at?: number | null;
-}
 
 interface PdfReaderProps {
   document: PdfDocument;
@@ -49,323 +79,28 @@ interface PdfReaderProps {
   onReadingChange: (page: number, pageCount: number) => void;
   onSummaryCreated: (summary: PdfSummary) => void | Promise<void>;
   onCreateNoteFromSelection?: (text: string) => void | Promise<void>;
+  onCreateNoteFromCapture?: (capture: PdfCaptureNotePayload) => void | Promise<void>;
   onOpenTerms?: () => void;
 }
 
-export interface PdfSummary {
-  title: string;
-  content: string;
+interface EmbedPdfCaptureAreaEvent {
+  pageIndex: number;
+  blob: Blob;
 }
 
-interface PdfChunk {
-  id: number;
-  pdf_document_id: number;
-  chunk_index: number;
-  page_start: number;
-  page_end: number;
-  content: string;
-  char_count: number;
-  token_estimate: number;
-  content_hash: string;
-  created_at: number;
-  updated_at?: number | null;
+interface EmbedPdfCaptureCapability {
+  onCaptureArea: (
+    listener: (event: EmbedPdfCaptureAreaEvent) => void,
+  ) => () => void;
 }
 
-interface PdfChunkInput {
-  chunkIndex: number;
-  pageStart: number;
-  pageEnd: number;
-  content: string;
-}
-
-interface PdfOutlineItem {
-  id: number;
-  pdf_document_id: number;
-  parent_id?: number | null;
-  title: string;
-  level: number;
-  sort: number;
-  page_number?: number | null;
-  dest?: string | null;
-  source: string;
-  confidence: number;
-  created_at: number;
-}
-
-interface PdfOutlineItemInput {
-  clientId: string;
-  parentClientId?: string | null;
-  title: string;
-  level: number;
-  sort: number;
-  pageNumber?: number | null;
-  dest?: string | null;
-  source: string;
-  confidence: number;
-}
-
-interface PdfPageText {
-  pageNumber: number;
-  content: string;
-}
-
-interface LoadedPdfState {
-  documentId: number;
-  pdf: pdfjsLib.PDFDocumentProxy;
-  task: pdfjsLib.PDFDocumentLoadingTask;
-}
-
-type ChunkStatus =
-  | "idle"
-  | "checking"
-  | "extracting"
-  | "saving"
-  | "summarizing"
-  | "ready"
-  | "empty"
-  | "error";
-type OutlineStatus = "idle" | "loading" | "extracting" | "ready" | "empty" | "error";
-interface PdfSummaryProgress {
-  progress: number;
-  message: string;
-  current: number;
-  total: number;
-}
-type PdfTextItem = Awaited<
-  ReturnType<pdfjsLib.PDFPageProxy["getTextContent"]>
->["items"][number];
-type PdfOutlineNode = NonNullable<
-  Awaited<ReturnType<pdfjsLib.PDFDocumentProxy["getOutline"]>>
->[number];
-
-const TARGET_CHUNK_CHARS = 5_000;
-const MIN_CHUNK_CHARS = 3_000;
-const MAX_CHUNK_CHARS = 8_000;
-const CREATE_SUMMARY_SELECTION_COMMAND_ID = "selection:create-summary-note";
-const CREATE_SUMMARY_SELECTION_ITEM_ID = "create-summary-note";
-const EMBED_PDF_NAV_SIDEBAR_ID = "sidebar-panel";
-const EMBED_PDF_NAV_SIDEBAR_COMMAND_ID = "panel:toggle-sidebar";
-const EMBED_PDF_NAV_SIDEBAR_PLACEMENT = "right";
-const EMBED_PDF_NAV_SIDEBAR_SLOT = "main";
-const EMBED_PDF_OUTLINE_TAB_ID = "outline";
-
-function formatFileSize(size: number): string {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function normalizePdfText(text: string): string {
-  return text
-    .replace(/\u0000/g, " ")
-    .replace(/[ \t\r\f\v]+/g, " ")
-    .replace(/\n[ \t]+/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function splitLongPageText(text: string, maxChars: number): string[] {
-  if (text.length <= maxChars) return [text];
-
-  const parts: string[] = [];
-  let remaining = text;
-  while (remaining.length > maxChars) {
-    const windowText = remaining.slice(0, maxChars);
-    const paragraphBreak = windowText.lastIndexOf("\n\n");
-    const sentenceBreak = Math.max(
-      windowText.lastIndexOf("。"),
-      windowText.lastIndexOf("！"),
-      windowText.lastIndexOf("？"),
-      windowText.lastIndexOf(". "),
-    );
-    const splitAt =
-      paragraphBreak > maxChars * 0.45
-        ? paragraphBreak
-        : sentenceBreak > maxChars * 0.45
-          ? sentenceBreak + 1
-          : maxChars;
-    parts.push(remaining.slice(0, splitAt).trim());
-    remaining = remaining.slice(splitAt).trim();
-  }
-
-  if (remaining) parts.push(remaining);
-  return parts.filter(Boolean);
-}
-
-function buildPdfChunks(pageTexts: PdfPageText[]): PdfChunkInput[] {
-  const chunks: PdfChunkInput[] = [];
-  let currentParts: string[] = [];
-  let currentStartPage = 0;
-  let currentEndPage = 0;
-  let currentLength = 0;
-
-  const flushChunk = () => {
-    const content = normalizePdfText(currentParts.join("\n\n"));
-    if (!content) return;
-
-    chunks.push({
-      chunkIndex: chunks.length,
-      pageStart: currentStartPage,
-      pageEnd: currentEndPage,
-      content,
-    });
-    currentParts = [];
-    currentStartPage = 0;
-    currentEndPage = 0;
-    currentLength = 0;
-  };
-
-  pageTexts.forEach((page) => {
-    const content = normalizePdfText(page.content);
-    if (!content) return;
-
-    splitLongPageText(content, MAX_CHUNK_CHARS).forEach((part) => {
-      const nextLength = currentLength + part.length;
-      const shouldFlush =
-        currentParts.length > 0 &&
-        (nextLength > MAX_CHUNK_CHARS ||
-          (currentLength >= MIN_CHUNK_CHARS && nextLength > TARGET_CHUNK_CHARS));
-
-      if (shouldFlush) {
-        flushChunk();
-      }
-
-      if (!currentParts.length) {
-        currentStartPage = page.pageNumber;
-      }
-      currentEndPage = page.pageNumber;
-      currentParts.push(part);
-      currentLength += part.length;
-    });
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(reader.error ?? new Error("读取截图失败"));
+    reader.readAsDataURL(blob);
   });
-
-  flushChunk();
-  return chunks;
-}
-
-function serializeOutlineDest(dest: PdfOutlineNode["dest"]): string | null {
-  if (!dest) return null;
-  if (typeof dest === "string") return dest;
-
-  try {
-    return JSON.stringify(dest);
-  } catch {
-    return String(dest);
-  }
-}
-
-async function resolveOutlinePageNumber(
-  pdf: pdfjsLib.PDFDocumentProxy,
-  dest: PdfOutlineNode["dest"],
-): Promise<number | null> {
-  if (!dest) return null;
-
-  try {
-    const destination = typeof dest === "string" ? await pdf.getDestination(dest) : dest;
-    const pageRef = Array.isArray(destination) ? destination[0] : null;
-    if (!pageRef) return null;
-
-    if (typeof pageRef === "number") {
-      return pageRef >= 0 ? pageRef + 1 : null;
-    }
-
-    return (await pdf.getPageIndex(pageRef)) + 1;
-  } catch {
-    return null;
-  }
-}
-
-async function extractPdfOutlineItems(
-  pdf: pdfjsLib.PDFDocumentProxy,
-): Promise<PdfOutlineItemInput[]> {
-  const outline = await pdf.getOutline();
-  if (!outline?.length) return [];
-
-  const items: PdfOutlineItemInput[] = [];
-  let sort = 0;
-
-  const visitNodes = async (
-    nodes: PdfOutlineNode[],
-    level: number,
-    parentClientId: string | null,
-  ) => {
-    for (const node of nodes) {
-      const title = normalizePdfText(node.title || "");
-      if (!title) continue;
-
-      sort += 1;
-      const clientId = `outline-${sort}`;
-      const pageNumber = await resolveOutlinePageNumber(pdf, node.dest);
-      items.push({
-        clientId,
-        parentClientId,
-        title,
-        level,
-        sort,
-        pageNumber,
-        dest: serializeOutlineDest(node.dest),
-        source: "pdf_outline",
-        confidence: pageNumber ? 1 : 0.8,
-      });
-
-      if (node.items?.length) {
-        await visitNodes(node.items, level + 1, clientId);
-      }
-    }
-  };
-
-  await visitNodes(outline, 1, null);
-  return items;
-}
-
-async function extractPdfPageTexts(
-  pdf: pdfjsLib.PDFDocumentProxy,
-  onProgress: (page: number, total: number) => void,
-): Promise<PdfPageText[]> {
-  const pages: PdfPageText[] = [];
-
-  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-    onProgress(pageNumber, pdf.numPages);
-    const page = await pdf.getPage(pageNumber);
-    const textContent = {
-      items: [] as PdfTextItem[],
-    };
-    const reader = page.streamTextContent().getReader();
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      textContent.items.push(
-        ...value.items.filter(
-          (item: PdfTextItem): item is PdfTextItem & { str: string } =>
-            "str" in item,
-        ),
-      );
-    }
-
-    const lines: string[] = [];
-    let line = "";
-
-    textContent.items.forEach((item) => {
-      if (!("str" in item)) return;
-      const text = normalizePdfText(item.str);
-      if (!text) return;
-
-      line = line ? `${line} ${text}` : text;
-      if ("hasEOL" in item && item.hasEOL) {
-        lines.push(line);
-        line = "";
-      }
-    });
-
-    if (line) lines.push(line);
-    pages.push({
-      pageNumber,
-      content: normalizePdfText(lines.join("\n")),
-    });
-  }
-
-  return pages;
 }
 
 export default function PdfReader({
@@ -376,6 +111,7 @@ export default function PdfReader({
   onReadingChange,
   onSummaryCreated,
   onCreateNoteFromSelection,
+  onCreateNoteFromCapture,
   onOpenTerms,
 }: PdfReaderProps) {
   const [loadedPdfState, setLoadedPdfState] = useState<LoadedPdfState | null>(null);
@@ -386,23 +122,148 @@ export default function PdfReader({
   );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [chunkStatus, setChunkStatus] = useState<ChunkStatus>("idle");
+  const [chunkStatus, setChunkStatus] = useState<PdfChunkStatus>("idle");
   const [chunkMessage, setChunkMessage] = useState("");
   const [summaryProgress, setSummaryProgress] =
     useState<PdfSummaryProgress | null>(null);
   const [outlineItems, setOutlineItems] = useState<PdfOutlineItem[]>([]);
-  const [outlineStatus, setOutlineStatus] = useState<OutlineStatus>("idle");
+  const [outlineStatus, setOutlineStatus] = useState<PdfOutlineStatus>("idle");
   const [outlineMessage, setOutlineMessage] = useState("");
+  const [isPdfFullscreen, setIsPdfFullscreen] = useState(false);
+  const [pageSettingsOpen, setPageSettingsOpen] = useState(false);
+  const [scrollStrategy, setScrollStrategy] = useState<ScrollStrategy>(
+    ScrollStrategy.Vertical,
+  );
+  const [spreadMode, setSpreadMode] = useState<SpreadMode>(SpreadMode.None);
+  const [zoomLevel, setZoomLevel] = useState<ZoomLevel>(ZoomMode.FitWidth);
   const viewerRef = useRef<HTMLDivElement>(null);
+  const pdfViewerRef = useRef<PDFViewerRef>(null);
+  const pageSettingsRef = useRef<HTMLDivElement>(null);
+  const pageSettingsButtonRef = useRef<HTMLButtonElement>(null);
   const scrollCapabilityRef = useRef<ScrollCapability | null>(null);
+  const spreadCapabilityRef = useRef<SpreadCapability | null>(null);
+  const zoomCapabilityRef = useRef<ZoomCapability | null>(null);
   const selectionCapabilityRef = useRef<SelectionCapability | null>(null);
   const scrollUnsubscribeRef = useRef<(() => void)[]>([]);
+  const pageSettingsUnsubscribeRef = useRef<(() => void)[]>([]);
+  const capturePatchObserverRef = useRef<MutationObserver | null>(null);
+  const latestCaptureRef = useRef<EmbedPdfCaptureAreaEvent | null>(null);
+  const captureNoteBusyRef = useRef(false);
+  const embedPdfReadyDocumentRef = useRef<number | null>(null);
   const currentPageRef = useRef(currentPage);
+  const pageStateFrameRef = useRef<number | null>(null);
+  const pendingPageStateRef = useRef({
+    page: currentPage,
+    pageCount,
+  });
+  const onReadingChangeRef = useRef(onReadingChange);
+  const onCreateNoteFromCaptureRef = useRef(onCreateNoteFromCapture);
   const chunkRequestIdRef = useRef(0);
   const pendingInitialPageRef = useRef(Math.max(document.last_page || 1, 1));
   const initialJumpPendingRef = useRef(true);
   const pdf =
     loadedPdfState?.documentId === document.id ? loadedPdfState.pdf : null;
+
+  useEffect(() => {
+    onReadingChangeRef.current = onReadingChange;
+  }, [onReadingChange]);
+
+  useEffect(() => {
+    onCreateNoteFromCaptureRef.current = onCreateNoteFromCapture;
+  }, [onCreateNoteFromCapture]);
+
+  const findEmbedPdfCaptureDialogButtons = useCallback(() => {
+    const shadowRoot = pdfViewerRef.current?.container?.shadowRoot;
+    const image = shadowRoot?.querySelector<HTMLImageElement>(
+      'img[alt="Captured PDF area"]',
+    );
+    const content = image?.parentElement?.parentElement;
+    const buttons = content
+      ? Array.from(content.querySelectorAll<HTMLButtonElement>("button"))
+      : [];
+    if (buttons.length < 2) return null;
+
+    return {
+      cancelButton: buttons[buttons.length - 2],
+      actionButton: buttons[buttons.length - 1],
+    };
+  }, []);
+
+  const patchEmbedPdfCaptureDialogAction = useCallback(() => {
+    const buttons = findEmbedPdfCaptureDialogButtons();
+    if (!buttons) return;
+
+    const { cancelButton, actionButton } = buttons;
+    if (actionButton.dataset.noteCaptureAction === "true") return;
+
+    const nextButton = actionButton.cloneNode(true) as HTMLButtonElement;
+    nextButton.dataset.noteCaptureAction = "true";
+    nextButton.textContent = "生成摘要笔记";
+    nextButton.disabled = !latestCaptureRef.current;
+    nextButton.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (captureNoteBusyRef.current) return;
+
+      const capture = latestCaptureRef.current;
+      const createNote = onCreateNoteFromCaptureRef.current;
+      if (!capture || !createNote) return;
+
+      captureNoteBusyRef.current = true;
+      nextButton.disabled = true;
+      nextButton.textContent = "生成中...";
+      try {
+        await createNote({
+          imageDataUrl: await blobToDataUrl(capture.blob),
+          documentName: document.name,
+          pageNumber: capture.pageIndex + 1,
+          pdfDocumentId: document.id,
+        });
+        cancelButton.click();
+      } catch (err) {
+        alert(err instanceof Error ? err.message : String(err));
+        nextButton.disabled = false;
+        nextButton.textContent = "生成摘要笔记";
+      } finally {
+        captureNoteBusyRef.current = false;
+      }
+    });
+
+    actionButton.replaceWith(nextButton);
+  }, [document.id, document.name, findEmbedPdfCaptureDialogButtons]);
+
+  const installEmbedPdfCaptureDialogAction = useCallback(
+    (registry: PluginRegistry) => {
+      const capturePlugin = registry.getPlugin("capture") as
+        | { provides?: () => unknown }
+        | undefined;
+      const captureCapability =
+        capturePlugin?.provides?.() as EmbedPdfCaptureCapability | undefined;
+      if (!captureCapability) return;
+
+      pageSettingsUnsubscribeRef.current.push(
+        captureCapability.onCaptureArea((event) => {
+          latestCaptureRef.current = event;
+          window.setTimeout(patchEmbedPdfCaptureDialogAction, 0);
+        }),
+      );
+
+      const shadowRoot = pdfViewerRef.current?.container?.shadowRoot;
+      if (!shadowRoot) return;
+
+      capturePatchObserverRef.current?.disconnect();
+      const observer = new MutationObserver(() => {
+        patchEmbedPdfCaptureDialogAction();
+      });
+      observer.observe(shadowRoot, {
+        childList: true,
+        subtree: true,
+      });
+      capturePatchObserverRef.current = observer;
+      pageSettingsUnsubscribeRef.current.push(() => observer.disconnect());
+    },
+    [patchEmbedPdfCaptureDialogAction],
+  );
 
   const activeOutlineItemId = useMemo(() => {
     return outlineItems.reduce<number | null>((activeId, item) => {
@@ -425,16 +286,29 @@ export default function PdfReader({
         signature: null,
       },
       fontFallback: null,
+      i18n: {
+        defaultLocale: "zh-CN",
+        fallbackLocale: "en",
+      },
       disabledCategories: [
         "annotation",
         "annotation-comment",
         "redaction",
+        "document-menu",
         "document-open",
         "document-close",
         "document-print",
         "document-export",
         "panel-comment",
+        "pan",
+        "pointer",
+        "mode-view",
+        "mode-insert",
+        "mode-form",
       ],
+      pan: {
+        defaultMode: "never",
+      },
       scroll: {
         defaultStrategy: ScrollStrategy.Vertical,
         defaultPageGap: 12,
@@ -452,15 +326,26 @@ export default function PdfReader({
     scrollUnsubscribeRef.current = [];
   }, []);
 
+  const schedulePageState = useCallback((page: number, totalPages: number) => {
+    pendingPageStateRef.current = { page, pageCount: totalPages };
+    if (pageStateFrameRef.current !== null) return;
+
+    pageStateFrameRef.current = window.requestAnimationFrame(() => {
+      pageStateFrameRef.current = null;
+      const next = pendingPageStateRef.current;
+      setCurrentPage((current) => (current === next.page ? current : next.page));
+      setPageCount((current) =>
+        current === next.pageCount ? current : next.pageCount,
+      );
+    });
+  }, []);
+
   const installEmbedPdfOutlineSidebar = useCallback(
     (registry: PluginRegistry) => {
       const commandsCapability = registry
         .getPlugin<CommandsPlugin>("commands")
         ?.provides();
       const uiCapability = registry.getPlugin<UIPlugin>("ui")?.provides();
-      const documentManagerCapability = registry
-        .getPlugin<DocumentManagerPlugin>("document-manager")
-        ?.provides();
       if (!commandsCapability || !uiCapability) return;
 
       uiCapability.mergeSchema({
@@ -535,47 +420,122 @@ export default function PdfReader({
       };
       commandsCapability.registerCommand(sidebarCommand);
 
-      if (!showProjectOutline) {
-        const openOutlineSidebar = (documentId: string | null | undefined) => {
-          if (!documentId) return false;
-          uiCapability.setActiveSidebar(
-            EMBED_PDF_NAV_SIDEBAR_PLACEMENT,
-            EMBED_PDF_NAV_SIDEBAR_SLOT,
-            EMBED_PDF_NAV_SIDEBAR_ID,
-            documentId,
-            EMBED_PDF_OUTLINE_TAB_ID,
-          );
-          return true;
-        };
-
-        if (openOutlineSidebar(documentManagerCapability?.getActiveDocumentId())) {
-          return;
-        }
-
-        let unsubscribeActiveDocument: (() => void) | undefined;
-        const stopWatchingActiveDocument = () => {
-          unsubscribeActiveDocument?.();
-          unsubscribeActiveDocument = undefined;
-        };
-        unsubscribeActiveDocument =
-          documentManagerCapability?.onActiveDocumentChanged((event) => {
-            if (openOutlineSidebar(event.currentDocumentId)) {
-              stopWatchingActiveDocument();
-            }
-          });
-
-        if (unsubscribeActiveDocument) {
-          scrollUnsubscribeRef.current.push(stopWatchingActiveDocument);
-        }
-
-        window.requestAnimationFrame(() => {
-          if (openOutlineSidebar(documentManagerCapability?.getActiveDocumentId())) {
-            stopWatchingActiveDocument();
-          }
-        });
-      }
     },
-    [showProjectOutline],
+    [],
+  );
+
+  const installEmbedPdfToolbarActions = useCallback(
+    (registry: PluginRegistry) => {
+      const uiCapability = registry.getPlugin<UIPlugin>("ui")?.provides();
+      if (!uiCapability) return;
+
+      const schema = uiCapability.getSchema();
+      const mainToolbar = schema.toolbars[EMBED_PDF_MAIN_TOOLBAR_ID];
+      if (!mainToolbar) return;
+
+      const screenshotToolbarItem: ToolbarItem = {
+        type: "command-button",
+        id: EMBED_PDF_SCREENSHOT_TOOLBAR_ITEM_ID,
+        commandId: EMBED_PDF_SCREENSHOT_COMMAND_ID,
+        variant: "icon",
+        categories: ["tools", "capture", "capture-screenshot"],
+      };
+      const fullscreenToolbarItem: ToolbarItem = {
+        type: "command-button",
+        id: EMBED_PDF_FULLSCREEN_TOOLBAR_ITEM_ID,
+        commandId: EMBED_PDF_FULLSCREEN_COMMAND_ID,
+        variant: "icon",
+        categories: ["document", "document-fullscreen"],
+      };
+      const sidebarToolbarItem: ToolbarItem = {
+        type: "command-button",
+        id: "sidebar-button",
+        commandId: EMBED_PDF_NAV_SIDEBAR_COMMAND_ID,
+        variant: "icon",
+        categories: ["panel", "panel-sidebar"],
+      };
+      const movedToolbarItemIds = [
+        "document-menu-button",
+        "divider-1",
+        "sidebar-button",
+        EMBED_PDF_PAGE_SETTINGS_TOOLBAR_ITEM_ID,
+        EMBED_PDF_SCREENSHOT_TOOLBAR_ITEM_ID,
+        EMBED_PDF_FULLSCREEN_TOOLBAR_ITEM_ID,
+      ];
+      const movedToolbarItems = [
+        sidebarToolbarItem,
+        screenshotToolbarItem,
+        fullscreenToolbarItem,
+      ];
+
+      const items = mainToolbar.items.map((item) => {
+        if (item.type !== "group") {
+          return item;
+        }
+
+        const groupItems = item.items.filter(
+          (groupItem) => !movedToolbarItemIds.includes(groupItem.id),
+        );
+
+        if (item.id === EMBED_PDF_RIGHT_TOOLBAR_GROUP_ID) {
+          const searchButtonIndex = groupItems.findIndex(
+            (groupItem) => groupItem.id === "search-button",
+          );
+          groupItems.splice(
+            searchButtonIndex >= 0 ? searchButtonIndex + 1 : 0,
+            0,
+            ...movedToolbarItems,
+          );
+        }
+
+        return {
+          ...item,
+          items: groupItems,
+        };
+      });
+
+      uiCapability.mergeSchema({
+        toolbars: {
+          ...schema.toolbars,
+          [EMBED_PDF_MAIN_TOOLBAR_ID]: {
+            ...mainToolbar,
+            items,
+          },
+        },
+      });
+    },
+    [],
+  );
+
+  const installEmbedPdfFullscreenCommand = useCallback(
+    (registry: PluginRegistry) => {
+      const commandsCapability = registry
+        .getPlugin<CommandsPlugin>("commands")
+        ?.provides();
+      if (!commandsCapability) return;
+
+      const command: Command = {
+        id: EMBED_PDF_FULLSCREEN_COMMAND_ID,
+        labelKey: "document.fullscreen",
+        label: "全屏",
+        icon: "fullscreen",
+        shortcuts: ["F11"],
+        categories: ["document", "document-fullscreen"],
+        action: () => {
+          void (async () => {
+            const currentWindow = getCurrentWindow();
+            const isFullscreen = await currentWindow.isFullscreen();
+            const nextFullscreen = !isFullscreen;
+            await currentWindow.setFullscreen(nextFullscreen);
+            setIsPdfFullscreen(nextFullscreen);
+          })().catch((error) => {
+            console.error("切换全屏失败", error);
+          });
+        },
+      };
+      commandsCapability.registerCommand(command);
+    },
+    [],
   );
 
   const createNoteFromEmbedPdfSelection = useCallback(
@@ -663,20 +623,57 @@ export default function PdfReader({
 
   const handleEmbedPdfReady = useCallback(
     (registry: PluginRegistry) => {
+      if (embedPdfReadyDocumentRef.current === document.id) return;
+      embedPdfReadyDocumentRef.current = document.id;
       clearScrollSubscriptions();
+      pageSettingsUnsubscribeRef.current.forEach((unsubscribe) => unsubscribe());
+      pageSettingsUnsubscribeRef.current = [];
       installEmbedPdfOutlineSidebar(registry);
+      installEmbedPdfFullscreenCommand(registry);
+      installEmbedPdfToolbarActions(registry);
+      installEmbedPdfCaptureDialogAction(registry);
       const scrollPlugin = registry.getPlugin<ScrollPlugin>("scroll");
+      const spreadPlugin = registry.getPlugin<SpreadPlugin>("spread");
+      const zoomPlugin = registry.getPlugin<ZoomPlugin>("zoom");
       const selectionPlugin = registry.getPlugin<SelectionPlugin>("selection");
       const scrollCapability = scrollPlugin?.provides() as ScrollCapability | undefined;
+      const spreadCapability = spreadPlugin?.provides() as
+        | SpreadCapability
+        | undefined;
+      const zoomCapability = zoomPlugin?.provides() as ZoomCapability | undefined;
       const selectionCapability = selectionPlugin?.provides() as
         | SelectionCapability
         | undefined;
       scrollCapabilityRef.current = scrollCapability ?? null;
+      spreadCapabilityRef.current = spreadCapability ?? null;
+      zoomCapabilityRef.current = zoomCapability ?? null;
       selectionCapabilityRef.current = selectionCapability ?? null;
+      if (spreadCapability) {
+        setSpreadMode(spreadCapability.getSpreadMode());
+        pageSettingsUnsubscribeRef.current.push(
+          spreadCapability.onSpreadChange((event) => {
+            setSpreadMode(event.spreadMode);
+          }),
+        );
+      }
+      if (zoomCapability) {
+        setZoomLevel(zoomCapability.getState().zoomLevel);
+        pageSettingsUnsubscribeRef.current.push(
+          zoomCapability.onStateChange((event) => {
+            setZoomLevel(event.state.zoomLevel);
+          }),
+        );
+      }
       if (selectionCapability) {
         installEmbedPdfSelectionSummaryAction(registry, selectionCapability);
       }
       if (!scrollCapability) return;
+      setScrollStrategy(ScrollStrategy.Vertical);
+      pageSettingsUnsubscribeRef.current.push(
+        scrollCapability.onStateChange((state) => {
+          setScrollStrategy(state.strategy);
+        }),
+      );
 
       const resolveInitialPage = (totalPages: number) =>
         Math.min(
@@ -684,11 +681,16 @@ export default function PdfReader({
           Math.max(totalPages, 1),
         );
 
-      const commitPageChange = (page: number, totalPages: number) => {
+      const commitPageChange = (
+        page: number,
+        totalPages: number,
+        persist = true,
+      ) => {
         currentPageRef.current = page;
-        setCurrentPage(page);
-        setPageCount(totalPages);
-        onReadingChange(page, totalPages);
+        schedulePageState(page, totalPages);
+        if (persist) {
+          onReadingChangeRef.current(page, totalPages);
+        }
       };
 
       const jumpToInitialPage = (totalPages: number) => {
@@ -699,7 +701,7 @@ export default function PdfReader({
           alignY: 0,
         });
         initialJumpPendingRef.current = false;
-        commitPageChange(initialPage, totalPages);
+        commitPageChange(initialPage, totalPages, false);
       };
 
       const unsubscribePageChange = scrollCapability.onPageChange((event) => {
@@ -724,9 +726,12 @@ export default function PdfReader({
     },
     [
       clearScrollSubscriptions,
+      document.id,
+      installEmbedPdfCaptureDialogAction,
+      installEmbedPdfFullscreenCommand,
       installEmbedPdfOutlineSidebar,
+      installEmbedPdfToolbarActions,
       installEmbedPdfSelectionSummaryAction,
-      onReadingChange,
     ],
   );
 
@@ -737,7 +742,17 @@ export default function PdfReader({
     const initialPage = Math.max(document.last_page || 1, 1);
 
     clearScrollSubscriptions();
+    pageSettingsUnsubscribeRef.current.forEach((unsubscribe) => unsubscribe());
+    pageSettingsUnsubscribeRef.current = [];
+    capturePatchObserverRef.current?.disconnect();
+    capturePatchObserverRef.current = null;
+    latestCaptureRef.current = null;
+    captureNoteBusyRef.current = false;
+    setPageSettingsOpen(false);
+    embedPdfReadyDocumentRef.current = null;
     scrollCapabilityRef.current = null;
+    spreadCapabilityRef.current = null;
+    zoomCapabilityRef.current = null;
     selectionCapabilityRef.current = null;
     setLoadedPdfState(null);
     setPdfSource("");
@@ -751,6 +766,10 @@ export default function PdfReader({
     setOutlineMessage("");
     setPageCount(document.page_count || 0);
     setCurrentPage(initialPage);
+    pendingPageStateRef.current = {
+      page: initialPage,
+      pageCount: document.page_count || 0,
+    };
     currentPageRef.current = initialPage;
     pendingInitialPageRef.current = initialPage;
     initialJumpPendingRef.current = true;
@@ -773,7 +792,6 @@ export default function PdfReader({
         publishedPdf = true;
         setLoadedPdfState({ documentId: document.id, pdf: nextPdf, task });
         setPageCount(nextPdf.numPages);
-        onReadingChange(initialPage, nextPdf.numPages);
       })
       .catch((err) => {
         if (canceled) return;
@@ -785,14 +803,24 @@ export default function PdfReader({
 
     return () => {
       canceled = true;
+      if (pageStateFrameRef.current !== null) {
+        window.cancelAnimationFrame(pageStateFrameRef.current);
+        pageStateFrameRef.current = null;
+      }
       clearScrollSubscriptions();
       scrollCapabilityRef.current = null;
+      spreadCapabilityRef.current = null;
+      zoomCapabilityRef.current = null;
       selectionCapabilityRef.current = null;
+      pageSettingsUnsubscribeRef.current.forEach((unsubscribe) => unsubscribe());
+      pageSettingsUnsubscribeRef.current = [];
+      capturePatchObserverRef.current?.disconnect();
+      capturePatchObserverRef.current = null;
       if (!publishedPdf) {
         void task?.destroy();
       }
     };
-  }, [clearScrollSubscriptions, document.id, onReadingChange]);
+  }, [clearScrollSubscriptions, document.id]);
 
   useEffect(() => {
     if (!pdf) return;
@@ -1020,16 +1048,44 @@ export default function PdfReader({
     };
   }, [loadedPdfState]);
 
+  useEffect(() => {
+    if (!pageSettingsOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (
+        pageSettingsRef.current?.contains(target) ||
+        pageSettingsButtonRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setPageSettingsOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setPageSettingsOpen(false);
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [pageSettingsOpen]);
+
   const jumpToPage = (page: number) => {
     const targetPage = Math.min(Math.max(page, 1), Math.max(pageCount, 1));
+    if (targetPage === currentPageRef.current) return;
     scrollCapabilityRef.current?.scrollToPage({
       pageNumber: targetPage,
       behavior: "smooth",
       alignY: 0,
     });
     currentPageRef.current = targetPage;
-    setCurrentPage(targetPage);
-    onReadingChange(targetPage, pageCount);
+    schedulePageState(targetPage, pageCount);
+    onReadingChangeRef.current(targetPage, pageCount);
   };
 
   const handleOutlineClick = (item: PdfOutlineItem) => {
@@ -1037,8 +1093,145 @@ export default function PdfReader({
     jumpToPage(item.page_number);
   };
 
+  const handleScrollStrategyChange = (strategy: ScrollStrategy) => {
+    scrollCapabilityRef.current?.setScrollStrategy(strategy);
+    setScrollStrategy(strategy);
+  };
+
+  const handleSpreadModeChange = (mode: SpreadMode) => {
+    spreadCapabilityRef.current?.setSpreadMode(mode);
+    setSpreadMode(mode);
+  };
+
+  const handleZoomModeChange = (level: ZoomLevel) => {
+    zoomCapabilityRef.current?.requestZoom(level);
+    setZoomLevel(level);
+  };
+
+  const pageSettingsControl = (
+    <div className="pdf-page-settings-anchor">
+      <button
+        ref={pageSettingsButtonRef}
+        type="button"
+        className={`note-term-toggle pdf-page-settings-button ${
+          pageSettingsOpen ? "note-term-toggle-active" : ""
+        }`}
+        aria-label="页面设置"
+        aria-expanded={pageSettingsOpen}
+        disabled={!pageCount}
+        title="页面设置"
+        onClick={() => setPageSettingsOpen((open) => !open)}
+      >
+        <svg
+          className="note-term-toggle-icon"
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+        >
+          <path d="M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7z" />
+          <path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.04.04a2.15 2.15 0 0 1-3.04 3.04l-.04-.04A1.8 1.8 0 0 0 14.74 19a1.8 1.8 0 0 0-1.08 1.65V20.8a2.15 2.15 0 0 1-4.3 0v-.06A1.8 1.8 0 0 0 8.28 19a1.8 1.8 0 0 0-1.98.36l-.04.04a2.15 2.15 0 0 1-3.04-3.04l.04-.04A1.8 1.8 0 0 0 5 15.24a1.8 1.8 0 0 0-1.65-1.08H3.2a2.15 2.15 0 0 1 0-4.3h.06A1.8 1.8 0 0 0 5 8.78a1.8 1.8 0 0 0-.36-1.98L4.6 6.76a2.15 2.15 0 0 1 3.04-3.04l.04.04A1.8 1.8 0 0 0 9.26 5a1.8 1.8 0 0 0 1.08-1.65V3.2a2.15 2.15 0 0 1 4.3 0v.06A1.8 1.8 0 0 0 15.72 5a1.8 1.8 0 0 0 1.98-.36l.04-.04a2.15 2.15 0 0 1 3.04 3.04l-.04.04A1.8 1.8 0 0 0 19 8.76a1.8 1.8 0 0 0 1.65 1.08h.15a2.15 2.15 0 0 1 0 4.3h-.06A1.8 1.8 0 0 0 19.4 15z" />
+        </svg>
+      </button>
+      {pageSettingsOpen && (
+        <div
+          ref={pageSettingsRef}
+          className="pdf-page-settings-popover"
+          role="menu"
+          aria-label="页面设置"
+        >
+          <section className="pdf-page-settings-group">
+            <span>滚动方向</span>
+            <div className="pdf-page-settings-options">
+              <button
+                type="button"
+                className={
+                  scrollStrategy === ScrollStrategy.Vertical
+                    ? "pdf-page-settings-option-active"
+                    : ""
+                }
+                onClick={() => handleScrollStrategyChange(ScrollStrategy.Vertical)}
+              >
+                纵向
+              </button>
+              <button
+                type="button"
+                className={
+                  scrollStrategy === ScrollStrategy.Horizontal
+                    ? "pdf-page-settings-option-active"
+                    : ""
+                }
+                onClick={() =>
+                  handleScrollStrategyChange(ScrollStrategy.Horizontal)
+                }
+              >
+                横向
+              </button>
+            </div>
+          </section>
+          <section className="pdf-page-settings-group">
+            <span>页面布局</span>
+            <div className="pdf-page-settings-options">
+              <button
+                type="button"
+                className={
+                  spreadMode === SpreadMode.None
+                    ? "pdf-page-settings-option-active"
+                    : ""
+                }
+                onClick={() => handleSpreadModeChange(SpreadMode.None)}
+              >
+                单页
+              </button>
+              <button
+                type="button"
+                className={
+                  spreadMode === SpreadMode.Odd
+                    ? "pdf-page-settings-option-active"
+                    : ""
+                }
+                onClick={() => handleSpreadModeChange(SpreadMode.Odd)}
+              >
+                双页
+              </button>
+            </div>
+          </section>
+          <section className="pdf-page-settings-group">
+            <span>缩放</span>
+            <div className="pdf-page-settings-options">
+              <button
+                type="button"
+                className={
+                  zoomLevel === ZoomMode.FitWidth
+                    ? "pdf-page-settings-option-active"
+                    : ""
+                }
+                onClick={() => handleZoomModeChange(ZoomMode.FitWidth)}
+              >
+                适合宽度
+              </button>
+              <button
+                type="button"
+                className={
+                  zoomLevel === ZoomMode.FitPage
+                    ? "pdf-page-settings-option-active"
+                    : ""
+                }
+                onClick={() => handleZoomModeChange(ZoomMode.FitPage)}
+              >
+                适合页面
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+    </div>
+  );
+
   return (
-    <main className="pdf-reader-panel">
+    <main
+      className={`pdf-reader-panel ${
+        isPdfFullscreen ? "pdf-reader-panel-fullscreen" : ""
+      }`}
+    >
       <header className="pdf-reader-header">
         <div className="pdf-reader-title-wrap">
           <h2>{document.name}</h2>
@@ -1048,6 +1241,7 @@ export default function PdfReader({
           </div>
         </div>
         <div className="pdf-reader-actions">
+          {pageSettingsControl}
           {onOpenTerms && (
             <TermToggleButton
               active={termSidebarOpen}
@@ -1111,7 +1305,9 @@ export default function PdfReader({
       </header>
       <div
         className={`pdf-reader-workspace ${
-          showProjectOutline ? "" : "pdf-reader-workspace-no-outline"
+          showProjectOutline && !isPdfFullscreen
+            ? ""
+            : "pdf-reader-workspace-no-outline"
         }`}
       >
         <section className="pdf-reader-surface">
@@ -1130,6 +1326,7 @@ export default function PdfReader({
                 </div>
               ) : (
                 <PDFViewer
+                  ref={pdfViewerRef}
                   key={`${document.id}-${pdfSource}`}
                   config={viewerConfig}
                   onReady={handleEmbedPdfReady}
@@ -1139,7 +1336,7 @@ export default function PdfReader({
             </div>
           )}
         </section>
-        {showProjectOutline && (
+        {showProjectOutline && !isPdfFullscreen && (
           <aside className="pdf-outline-panel">
             <header className="panel-header">
               <h2>目录</h2>

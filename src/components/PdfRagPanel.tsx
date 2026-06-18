@@ -1,32 +1,16 @@
 import { useMemo, type FormEvent } from "react";
+import type {
+  PdfRagProgress,
+  PdfRagResult,
+  PdfRagStatus,
+} from "../types/pdf";
 import { markdownToHtml } from "../utils/markdown";
-
-export type PdfRagStatus =
-  | "idle"
-  | "preparing"
-  | "indexing"
-  | "searching"
-  | "answering"
-  | "ready"
-  | "empty"
-  | "error";
-
-export interface PdfRagProgress {
-  progress: number;
-  message: string;
-  current: number;
-  total: number;
-}
-
-export interface PdfRagResult {
-  chunk_id: number;
-  chunk_index: number;
-  page_start: number;
-  page_end: number;
-  content: string;
-  distance: number;
-  score: number;
-}
+import {
+  excerptPdfText,
+  formatVectorScore,
+  statusClass,
+  statusLabel,
+} from "../utils/pdfRag";
 
 interface PdfRagPanelProps {
   answer: string;
@@ -43,28 +27,6 @@ interface PdfRagPanelProps {
   query: string;
   results: PdfRagResult[];
   status: PdfRagStatus;
-}
-
-function formatVectorScore(score: number): string {
-  return `${Math.round(Math.max(-1, Math.min(score, 1)) * 100)}%`;
-}
-
-function excerptPdfText(text: string, limit = 220): string {
-  const content = text.replace(/\s+/g, " ").trim();
-  if (content.length <= limit) return content;
-  return `${content.slice(0, limit).trim()}...`;
-}
-
-function statusLabel(status: PdfRagStatus, busy: boolean, message: string): string {
-  if (busy) return "处理中";
-  if (status === "ready") return "已完成";
-  return message;
-}
-
-function statusClass(status: PdfRagStatus): string {
-  if (status === "ready") return "pdf-rag-status-ok";
-  if (status === "error" || status === "empty") return "pdf-rag-status-warn";
-  return "pdf-rag-status-active";
 }
 
 export default function PdfRagPanel({

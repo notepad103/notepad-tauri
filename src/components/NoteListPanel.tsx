@@ -1,23 +1,19 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useStore } from "@tanstack/react-store";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { useAppActions } from "../context/AppActionsContext";
 import { sidebarStore } from "../store/sidebar";
 import { notesStore } from "../store/notes";
-import type { NavFilter, NoteType } from "../mock/notes";
+import { NOTE_TYPE_ICON, NOTE_TYPE_LABEL } from "../constants/notes";
+import type { NavFilter, NoteType } from "../types/notes";
+import { isTodayNote } from "../utils/noteFilters";
+import { displayNoteTitle } from "../utils/noteText";
 
 interface NoteListPanelProps {
   selectedNoteId: string;
 }
 
-const NOTE_TYPE_ICON: Record<NoteType, { label: string; title: string }> = {
-  normal: { label: "N", title: "普通笔记" },
-  note_summary: { label: "A", title: "摘要笔记" },
-  pdf_note: { label: "P", title: "PDF 关联笔记" },
-  pdf_summary: { label: "S", title: "PDF 总结笔记" },
-  web_summary: { label: "W", title: "网页总结笔记" },
-  term_article: { label: "T", title: "名词扩展文章" },
-};
+const NOTE_TYPE_ORDER = Object.keys(NOTE_TYPE_LABEL) as NoteType[];
 
 export default function NoteListPanel({
   selectedNoteId,
@@ -26,6 +22,7 @@ export default function NoteListPanel({
   const noteListItems = useStore(notesStore, (state) => state.list);
   const { noteCreated, prepareNoteCreation, selectNote } = useAppActions();
   const [searchQuery, setSearchQuery] = useState("");
+  const [typeFilter, setTypeFilter] = useState<NoteType | "all">("all");
 
   const isCustomCategory = useMemo(() => {
     return customList.some((cat) => cat.id === selectedId);
@@ -42,21 +39,27 @@ export default function NoteListPanel({
   const activeCategoryLabel =
     customList.find((cat) => cat.id === activeCategory)?.label ?? "";
   const hasSearchQuery = Boolean(searchQuery.trim());
+  const hasTypeFilter = typeFilter !== "all";
 
-  const isToday = (createdAt: number | null) => {
-    if (!createdAt) return false;
-    const date = new Date(createdAt * 1000);
-    const today = new Date();
-    return (
-      date.getFullYear() === today.getFullYear() &&
-      date.getMonth() === today.getMonth() &&
-      date.getDate() === today.getDate()
+  const typeFilterOptions = useMemo(() => {
+    const existingTypes = new Set(noteListItems.map((note) => note.note_type));
+    return NOTE_TYPE_ORDER.filter((type) => existingTypes.has(type)).map(
+      (type) => ({
+        value: type,
+        label: NOTE_TYPE_LABEL[type],
+      }),
     );
-  };
+  }, [noteListItems]);
+
+  useEffect(() => {
+    if (typeFilter === "all") return;
+    if (typeFilterOptions.some((option) => option.value === typeFilter)) return;
+    setTypeFilter("all");
+  }, [typeFilter, typeFilterOptions]);
 
   const getNotesInCurrentScope = (notes: typeof noteListItems) => {
     return notes.filter((note) => {
-      if (activeNav === "today" && !isToday(note.created_at)) return false;
+      if (activeNav === "today" && !isTodayNote(note.created_at)) return false;
       if (activeNav === "important" && !note.is_pinned) return false;
       if (activeCategory) {
         return Number(note.group_id) === Number(activeCategory);
@@ -78,7 +81,7 @@ export default function NoteListPanel({
   };
 
   const handleDeleteNote = async (id: string, title: string) => {
-    const confirmed = await confirm(`确定删除笔记「${title}」吗？`, {
+    const confirmed = await confirm(`确定删除笔记「${displayNoteTitle(title)}」吗？`, {
       title: "删除笔记",
       kind: "warning",
       okLabel: "删除",
@@ -115,7 +118,8 @@ export default function NoteListPanel({
         const haystack = `${note.title} ${note.preview} ${groupLabel}`.toLowerCase();
         if (!haystack.includes(q)) return false;
       }
-      if (activeNav === "today" && !isToday(note.created_at)) return false;
+      if (typeFilter !== "all" && note.note_type !== typeFilter) return false;
+      if (activeNav === "today" && !isTodayNote(note.created_at)) return false;
       if (activeNav === "important" && !note.is_pinned) return false;
       if (activeCategory) {
         const expectedTag =
@@ -132,6 +136,7 @@ export default function NoteListPanel({
   }, [
     noteListItems,
     searchQuery,
+    typeFilter,
     activeNav,
     activeCategory,
     customList,
@@ -147,6 +152,18 @@ export default function NoteListPanel({
   }, [activeCategoryLabel, activeNav, hasSearchQuery]);
 
   const emptyState = useMemo(() => {
+    if (hasTypeFilter) {
+      return {
+        title: "没有这个类型的笔记",
+        description: "切换类型，或清空筛选后再浏览当前列表。",
+        actionLabel: "清空筛选",
+        action: () => {
+          setSearchQuery("");
+          setTypeFilter("all");
+        },
+      };
+    }
+
     if (hasSearchQuery) {
       return {
         title: "没有匹配的笔记",
@@ -197,7 +214,7 @@ export default function NoteListPanel({
         void handleCreateNote();
       },
     };
-  }, [activeCategoryLabel, activeNav, hasSearchQuery]);
+  }, [activeCategoryLabel, activeNav, hasSearchQuery, hasTypeFilter]);
 
   return (
     <section className="note-list-panel">
@@ -205,7 +222,7 @@ export default function NoteListPanel({
         <h2>笔记列表</h2>
         <p>{`${scopeLabel} · ${filteredNotes.length}`}</p>
       </header>
-      <div className="search-box">
+      <div className="search-box note-list-filter-row">
         <div className="search-input-wrap">
           <input
             type="search"
@@ -225,6 +242,21 @@ export default function NoteListPanel({
             </button>
           )}
         </div>
+        <select
+          className="note-type-filter"
+          aria-label="按笔记类型过滤"
+          value={typeFilter}
+          onChange={(event) =>
+            setTypeFilter(event.target.value as NoteType | "all")
+          }
+        >
+          <option value="all">全部类型</option>
+          {typeFilterOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
       </div>
       {filteredNotes.length ? (
         <ul className="note-cards">
@@ -253,7 +285,9 @@ export default function NoteListPanel({
                     >
                       {NOTE_TYPE_ICON[note.note_type].label}
                     </span>
-                    <h3 className="note-card-title">{note.title}</h3>
+                    <h3 className="note-card-title">
+                      {displayNoteTitle(note.title)}
+                    </h3>
                     {note.is_pinned && (
                       <span className="note-important-badge">重要</span>
                     )}

@@ -1,33 +1,11 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { save as saveFile } from "@tauri-apps/plugin-dialog";
-
-interface AiSettings {
-  model: string;
-  available_models: string[];
-  api_key_configured: boolean;
-  key_source: string;
-}
+import type { AiSettings } from "../types/settings";
+import { exportFileName } from "../utils/settings";
 
 interface SettingsPageProps {
   onClose: () => void;
-}
-
-function exportFileName(): string {
-  const now = new Date();
-  const pad = (value: number) => String(value).padStart(2, "0");
-  const date = [
-    now.getFullYear(),
-    pad(now.getMonth() + 1),
-    pad(now.getDate()),
-  ].join("");
-  const time = [
-    pad(now.getHours()),
-    pad(now.getMinutes()),
-    pad(now.getSeconds()),
-  ].join("");
-
-  return `notepad-data-${date}-${time}.db`;
 }
 
 export default function SettingsPage({ onClose }: SettingsPageProps) {

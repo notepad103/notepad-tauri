@@ -1,10 +1,5 @@
 import { slug } from "../utils/markdown";
-
-interface TocItem {
-  id: string;
-  label: string;
-  level: number;
-}
+import type { TocItem } from "../types/notes";
 
 interface TocPanelProps {
   toc: TocItem[];

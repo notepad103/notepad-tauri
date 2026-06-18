@@ -3,8 +3,6 @@ import { useStore } from "@tanstack/react-store";
 import {
   buildToc,
   navItems,
-  type Category,
-  type NoteListItem,
 } from "./mock/notes";
 import { notesStore } from "./store/notes";
 import { sidebarStore } from "./store/sidebar";
@@ -24,41 +22,8 @@ import GlobalSearchDialog from "./components/GlobalSearchDialog";
 import { AppActionsProvider } from "./context/AppActionsContext";
 import { usePdfDocuments } from "./hooks/usePdfDocuments";
 import { useNoteAi } from "./hooks/useNoteAi";
+import { getNotesBySelectedGroup, isTodayNote } from "./utils/noteFilters";
 import "./App.css";
-
-function isTodayNote(createdAt: number | null): boolean {
-  if (!createdAt) return false;
-  const date = new Date(createdAt * 1000);
-  const today = new Date();
-  return (
-    date.getFullYear() === today.getFullYear() &&
-    date.getMonth() === today.getMonth() &&
-    date.getDate() === today.getDate()
-  );
-}
-
-function getNotesBySelectedGroup(
-  notes: NoteListItem[],
-  selectedId: string,
-  customList: Category[],
-): NoteListItem[] {
-  const selectedCategory = customList.find((cat) => cat.id === selectedId);
-  if (selectedCategory) {
-    return notes.filter(
-      (note) => Number(note.group_id) === Number(selectedCategory.id),
-    );
-  }
-
-  if (selectedId === "today") {
-    return notes.filter((note) => isTodayNote(note.created_at));
-  }
-
-  if (selectedId === "important") {
-    return notes.filter((note) => note.is_pinned);
-  }
-
-  return notes;
-}
 
 function App() {
   const [selectedNoteId, setSelectedNoteId] = useState("");
@@ -82,6 +47,7 @@ function App() {
     () => getNotesBySelectedGroup(notesState.list, selectedId, customList),
     [customList, notesState.list, selectedId],
   );
+  const firstSelectedGroupNoteId = selectedGroupNotes[0]?.id ?? "";
   const noteListAutoHidden = selectedGroupNotes.length === 0;
   const hideNoteListPanel = noteListAutoHidden || noteListManuallyHidden;
 
@@ -93,10 +59,25 @@ function App() {
   const referenceNotes = useMemo(() => {
     if (!noteDetail.note_id) return [];
     return notesState.list.filter(
-      (note) =>
-        note.id !== noteDetail.id && note.source_note_id === noteDetail.note_id,
+      (note) => {
+        if (note.id === noteDetail.id) return false;
+        if (note.source_note_id === noteDetail.note_id) return true;
+
+        return (
+          noteDetail.note_type === "pdf_note" &&
+          note.note_type === "pdf_summary" &&
+          Boolean(noteDetail.pdf_document_id) &&
+          note.pdf_document_id === noteDetail.pdf_document_id
+        );
+      },
     );
-  }, [noteDetail.id, noteDetail.note_id, notesState.list]);
+  }, [
+    noteDetail.id,
+    noteDetail.note_id,
+    noteDetail.note_type,
+    noteDetail.pdf_document_id,
+    notesState.list,
+  ]);
   const sourceNoteId = noteDetail.source_note_id
     ? `db-${noteDetail.source_note_id}`
     : "";
@@ -175,13 +156,30 @@ function App() {
   const sourcePdf = noteDetail.pdf_document_id
     ? pdfDocuments.find((document) => document.id === noteDetail.pdf_document_id)
     : null;
+  const activePdfDocumentId = pdfDocument?.id ?? null;
 
   const handleSelectNote = useCallback(async (id: string) => {
     closeSettings();
-    setSelectedNoteId(id);
     const detail = notesStore.actions.getNoteDetail(id);
+    const shouldOpenPdf =
+      detail.note_type === "pdf_note" && Boolean(detail.pdf_document_id);
+    if (
+      id === selectedNoteId &&
+      (shouldOpenPdf
+        ? activePdfDocumentId === detail.pdf_document_id
+        : activePdfDocumentId === null)
+    ) {
+      return;
+    }
+
+    setSelectedNoteId(id);
     await syncPdfDocumentForNote(detail);
-  }, [closeSettings, syncPdfDocumentForNote]);
+  }, [
+    closeSettings,
+    activePdfDocumentId,
+    selectedNoteId,
+    syncPdfDocumentForNote,
+  ]);
 
   const handleSelectGlobalSearchResult = async (id: string, query: string) => {
     setGlobalSearchOpen(false);
@@ -227,18 +225,17 @@ function App() {
     previousSelectedGroupId.current = selectedId;
     if (!selectedGroupChanged && selectedNoteId) return;
 
-    const firstNote = selectedGroupNotes[0];
-    if (!firstNote) {
+    if (!firstSelectedGroupNoteId) {
       clearPdfDocument();
       setSelectedNoteId("");
       return;
     }
 
-    void handleSelectNote(firstNote.id);
+    void handleSelectNote(firstSelectedGroupNoteId);
   }, [
     clearPdfDocument,
+    firstSelectedGroupNoteId,
     handleSelectNote,
-    selectedGroupNotes,
     selectedId,
     selectedNoteId,
   ]);
@@ -342,6 +339,7 @@ function App() {
                 onReadingChange={updatePdfReadingPosition}
                 onSummaryCreated={createPdfSummaryNote}
                 onCreateNoteFromSelection={noteAi.createNoteFromSelection}
+                onCreateNoteFromCapture={noteAi.createNoteFromPdfCapture}
                 onOpenTerms={() => setTermSidebarOpen(true)}
               />
               <TermSidebar
@@ -431,8 +429,6 @@ function App() {
         />
         <GlobalSearchDialog
           open={globalSearchOpen}
-          notes={notesState.list}
-          categories={customList}
           selectedNoteId={selectedNoteId}
           onClose={() => setGlobalSearchOpen(false)}
           onSelectNote={handleSelectGlobalSearchResult}

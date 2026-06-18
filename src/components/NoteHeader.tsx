@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import type { NoteDetail } from "../mock/notes";
+import type { NoteDetail } from "../types/notes";
 import { notesStore } from "../store/notes";
 import TermToggleButton from "./TermToggleButton";
+import { sectionsToMarkdown } from "../utils/editor";
 
 interface NoteHeaderProps {
   noteDetail: NoteDetail;
@@ -12,15 +13,6 @@ interface NoteHeaderProps {
   onOpenSourceNote?: () => void;
   onOpenSourcePdf?: () => void;
   onOpenTerms?: () => void;
-}
-
-function sectionsToMarkdown(noteDetail: NoteDetail): string {
-  return noteDetail.sections
-    .map((section) => {
-      const heading = `${"#".repeat(section.level)} ${section.heading}`;
-      return [heading, ...section.paragraphs].join("\n");
-    })
-    .join("\n\n");
 }
 
 export default function NoteHeader({
@@ -45,7 +37,7 @@ export default function NoteHeader({
       current.content ?? noteDetail.content ?? sectionsToMarkdown(current);
     void notesStore.actions.updateNote(
       noteDetail.id,
-      title.trim() || "未命名笔记",
+      title.trim(),
       currentContent,
     );
   };
@@ -56,12 +48,13 @@ export default function NoteHeader({
         <input
           id={`title-${noteDetail.id}`}
           className="editor-title-input"
+          placeholder="标题"
           value={title}
           onChange={(event) => {
             setTitle(event.target.value);
             notesStore.actions.updateNoteTitleLocal(
               noteDetail.id,
-              event.target.value.trim() || "未命名笔记",
+              event.target.value.trim(),
             );
           }}
           onBlur={saveTitle}

@@ -1,74 +1,50 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { Category, NoteListItem, NoteType } from "../mock/notes";
-import {
-  htmlToPlainText,
-  isHtmlContent,
-  markdownToPlainText,
-} from "../utils/markdown";
+import { invoke } from "@tauri-apps/api/core";
+import { useEffect, useRef, useState } from "react";
+import { normalizeNoteType } from "../constants/notes";
+import type { NoteListItem } from "../types/notes";
+import type { DbSearchResult, SearchResult } from "../types/search";
+import { formatNoteDisplayTime } from "../utils/date";
+import { normalizeSearchText } from "../utils/globalSearch";
+import { normalizePreview } from "../utils/markdown";
 
 interface GlobalSearchDialogProps {
   open: boolean;
-  notes: NoteListItem[];
-  categories: Category[];
   selectedNoteId: string;
   onClose: () => void;
   onSelectNote: (id: string, query: string) => void | Promise<void>;
 }
 
-interface SearchResult {
-  note: NoteListItem;
-  categoryLabel: string;
-  typeLabel: string;
-  score: number;
-  snippet: string;
-}
+function toSearchResult(result: DbSearchResult): SearchResult {
+  const note: NoteListItem = {
+    id: `db-${result.note.id}`,
+    note_id: result.note.id,
+    group_id: result.note.group_id,
+    note_type: normalizeNoteType(result.note.note_type),
+    pdf_document_id: result.note.pdf_document_id,
+    source_note_id: result.note.source_note_id,
+    source_term: result.note.source_term,
+    title: result.note.title,
+    content: result.note.content,
+    is_deleted: result.note.is_deleted,
+    is_pinned: result.note.is_pinned,
+    created_at: result.note.created_at,
+    preview: normalizePreview(result.note.content),
+    display_time: formatNoteDisplayTime(result.note.created_at),
+  };
 
-const NOTE_TYPE_LABEL: Record<NoteType, string> = {
-  normal: "普通笔记",
-  note_summary: "摘要笔记",
-  pdf_note: "PDF 关联笔记",
-  pdf_summary: "PDF 总结笔记",
-  web_summary: "网页总结笔记",
-  term_article: "名词扩展文章",
-};
-
-const MAX_RESULTS = 60;
-const SNIPPET_RADIUS = 42;
-
-function toPlainText(content: string): string {
-  return isHtmlContent(content)
-    ? htmlToPlainText(content)
-    : markdownToPlainText(content);
-}
-
-function normalize(text: string): string {
-  return text.trim().toLowerCase();
-}
-
-function findMatchIndex(text: string, query: string): number {
-  return normalize(text).indexOf(query);
-}
-
-function getSnippet(text: string, matchIndex: number): string {
-  const compactText = text.replace(/\s+/g, " ").trim();
-  if (!compactText) return "无正文内容";
-  if (matchIndex < 0) {
-    return compactText.length > SNIPPET_RADIUS * 2
-      ? `${compactText.slice(0, SNIPPET_RADIUS * 2)}...`
-      : compactText;
-  }
-
-  const start = Math.max(0, matchIndex - SNIPPET_RADIUS);
-  const end = Math.min(compactText.length, matchIndex + SNIPPET_RADIUS);
-  const prefix = start > 0 ? "..." : "";
-  const suffix = end < compactText.length ? "..." : "";
-  return `${prefix}${compactText.slice(start, end)}${suffix}`;
+  return {
+    note,
+    categoryLabel: result.categoryLabel,
+    typeLabel: result.typeLabel,
+    score: result.score,
+    snippet: result.snippet,
+  };
 }
 
 function highlightText(text: string, query: string) {
   if (!query) return text;
 
-  const index = normalize(text).indexOf(query);
+  const index = normalizeSearchText(text).indexOf(query);
   if (index < 0) return text;
 
   return (
@@ -80,83 +56,21 @@ function highlightText(text: string, query: string) {
   );
 }
 
-function buildResults(
-  notes: NoteListItem[],
-  categories: Category[],
-  rawQuery: string,
-): SearchResult[] {
-  const query = normalize(rawQuery);
-  if (!query) return [];
-
-  const categoryMap = new Map(
-    categories.map((category) => [Number(category.id), category.label]),
-  );
-
-  return notes
-    .map((note) => {
-      const categoryLabel = note.group_id
-        ? (categoryMap.get(note.group_id) ?? "")
-        : "";
-      const typeLabel = NOTE_TYPE_LABEL[note.note_type];
-      const plainContent = toPlainText(note.content || note.preview);
-      const titleMatchIndex = findMatchIndex(note.title, query);
-      const contentMatchIndex = findMatchIndex(plainContent, query);
-      const categoryMatchIndex = findMatchIndex(categoryLabel, query);
-      const typeMatchIndex = findMatchIndex(typeLabel, query);
-
-      if (
-        titleMatchIndex < 0 &&
-        contentMatchIndex < 0 &&
-        categoryMatchIndex < 0 &&
-        typeMatchIndex < 0
-      ) {
-        return null;
-      }
-
-      const snippetSource =
-        contentMatchIndex >= 0 ? plainContent : note.preview || plainContent;
-      const snippet = getSnippet(snippetSource, contentMatchIndex);
-      const score =
-        (titleMatchIndex === 0 ? 80 : titleMatchIndex > 0 ? 60 : 0) +
-        (contentMatchIndex >= 0 ? 30 : 0) +
-        (categoryMatchIndex >= 0 ? 12 : 0) +
-        (typeMatchIndex >= 0 ? 8 : 0) +
-        (note.is_pinned ? 4 : 0);
-
-      return {
-        note,
-        categoryLabel,
-        typeLabel,
-        score,
-        snippet,
-      };
-    })
-    .filter((result): result is SearchResult => Boolean(result))
-    .sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      return (b.note.created_at ?? 0) - (a.note.created_at ?? 0);
-    })
-    .slice(0, MAX_RESULTS);
-}
-
 export default function GlobalSearchDialog({
   open,
-  notes,
-  categories,
   selectedNoteId,
   onClose,
   onSelectNote,
 }: GlobalSearchDialogProps) {
   const [query, setQuery] = useState("");
+  const [results, setResults] = useState<SearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const searchTokenRef = useRef(0);
   const queryText = query.trim();
-  const normalizedQuery = normalize(query);
-
-  const results = useMemo(
-    () => buildResults(notes, categories, query),
-    [categories, notes, query],
-  );
+  const normalizedQuery = normalizeSearchText(query);
 
   useEffect(() => {
     if (!open) return;
@@ -171,6 +85,52 @@ export default function GlobalSearchDialog({
   useEffect(() => {
     setActiveIndex(0);
   }, [query]);
+
+  useEffect(() => {
+    if (!open) {
+      setResults([]);
+      setSearching(false);
+      setSearchError("");
+      return;
+    }
+
+    const token = searchTokenRef.current + 1;
+    searchTokenRef.current = token;
+    setActiveIndex(0);
+    setSearchError("");
+
+    if (!queryText) {
+      setResults([]);
+      setSearching(false);
+      return;
+    }
+
+    setSearching(true);
+    const timer = window.setTimeout(() => {
+      invoke<DbSearchResult[]>("search_notes", { query: queryText })
+        .then((nextResults) => {
+          if (searchTokenRef.current !== token) return;
+          setResults(nextResults.map(toSearchResult));
+        })
+        .catch((error) => {
+          if (searchTokenRef.current !== token) return;
+          setResults([]);
+          setSearchError(error instanceof Error ? error.message : String(error));
+        })
+        .finally(() => {
+          if (searchTokenRef.current !== token) return;
+          setSearching(false);
+        });
+    }, 120);
+
+    return () => window.clearTimeout(timer);
+  }, [open, queryText]);
+
+  useEffect(() => {
+    setActiveIndex((index) =>
+      results.length ? Math.min(index, results.length - 1) : 0,
+    );
+  }, [results.length]);
 
   if (!open) return null;
 
@@ -234,7 +194,11 @@ export default function GlobalSearchDialog({
         </div>
 
         <div className="global-search-summary">
-          {queryText ? `${results.length} 条结果` : "输入关键词搜索全部笔记"}
+          {queryText
+            ? searching
+              ? "搜索中..."
+              : `${results.length} 条结果`
+            : "输入关键词搜索全部笔记"}
         </div>
 
         {queryText && results.length ? (
@@ -275,7 +239,13 @@ export default function GlobalSearchDialog({
           </ul>
         ) : (
           <div className="global-search-empty" role="status">
-            {queryText ? "没有找到匹配的笔记" : "支持搜索标题、正文、分类和笔记类型"}
+            {searchError
+              ? "搜索失败，请稍后重试"
+              : queryText
+                ? searching
+                  ? "正在搜索全部笔记"
+                  : "没有找到匹配的笔记"
+                : "支持搜索标题、正文、分类和笔记类型"}
           </div>
         )}
       </section>
