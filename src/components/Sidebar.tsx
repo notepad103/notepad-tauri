@@ -4,6 +4,7 @@ import type { Category } from "../types/notes";
 import { sidebarStore } from "../store/sidebar";
 import { useStore } from "@tanstack/react-store";
 import { CATEGORY_NAME_MAX_LENGTH } from "../constants/sidebar";
+import { startWindowDrag } from "../utils/windowDrag";
 
 interface SidebarProps {
   settingsActive?: boolean;
@@ -148,7 +149,11 @@ export default function Sidebar({
 
   return (
     <aside className="sidebar">
-      <div className="sidebar-header">
+      <div
+        className="sidebar-header"
+        data-tauri-drag-region
+        onMouseDown={startWindowDrag}
+      >
         <h1 className="sidebar-title">记事本</h1>
       </div>
 

@@ -97,9 +97,22 @@ export default function EditorContent({
       scheduleHeadingIds(editor.view.dom);
     },
     onUpdate: ({ editor }) => {
-      setContent(editor.getHTML());
+      const html = editor.getHTML();
+      setContent(html);
       setSearchCount(getSearchState(editor).count);
       scheduleHeadingIds(editor.view.dom);
+      // Mirror the latest edit into the store so a window close that never
+      // triggers blur still has the current content available to flush. The
+      // store collapses the actual RPC until blur (or window close) fires.
+      const nextTitle = (document.getElementById(
+        `title-${noteDetail.id}`,
+      ) as HTMLInputElement | null)?.value
+        ?? noteDetail.title;
+      notesStore.actions.updateNoteLocal(
+        noteDetail.id,
+        nextTitle.trim(),
+        html,
+      );
     },
   });
 
@@ -338,6 +351,12 @@ export default function EditorContent({
     });
   };
 
+  const preventToolbarMouseDown = (
+    event: MouseEvent<HTMLButtonElement | HTMLDivElement>,
+  ) => {
+    event.preventDefault();
+  };
+
   const handleEditorContextMenu = (event: MouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
     if (!target.closest(".tiptap-editor-surface")) {
@@ -376,7 +395,10 @@ export default function EditorContent({
             onContextMenu={handleEditorContextMenu}
             onBlur={saveNote}
           >
-            <div className="tiptap-toolbar">
+            <div
+              className="tiptap-toolbar"
+              onMouseDown={preventToolbarMouseDown}
+            >
               <button
                 type="button"
                 className={`tiptap-toolbar-btn ${

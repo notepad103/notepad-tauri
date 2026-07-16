@@ -4,35 +4,28 @@ import type { NoteDetail } from "../types/notes";
 import { useAppActions } from "../context/AppActionsContext";
 import { notesStore } from "../store/notes";
 import { sidebarStore } from "../store/sidebar";
+import { startWindowDrag } from "../utils/windowDrag";
 
 interface EditorToolbarProps {
   selectedNoteId: string;
   noteDetail: NoteDetail;
-  aiTermsLoading: boolean;
-  noteSummaryLoading: boolean;
   pdfLoading: boolean;
   pdfActive: boolean;
   noteListVisible: boolean;
   noteListToggleDisabled: boolean;
   onToggleNoteList: () => void;
   onOpenGlobalSearch: () => void;
-  onCreateNoteSummary: () => void | Promise<void>;
-  onExplainTerms: () => void | Promise<void>;
 }
 
 export default function EditorToolbar({
   selectedNoteId,
   noteDetail,
-  aiTermsLoading,
-  noteSummaryLoading,
   pdfLoading,
   pdfActive,
   noteListVisible,
   noteListToggleDisabled,
   onToggleNoteList,
   onOpenGlobalSearch,
-  onCreateNoteSummary,
-  onExplainTerms,
 }: EditorToolbarProps) {
   const { customList, selectedId } = useStore(sidebarStore, (state) => state);
   const {
@@ -82,17 +75,6 @@ export default function EditorToolbar({
     void selectNote(detail.id);
   };
 
-  const handleToggleImportant = async () => {
-    if (!selectedNoteId) return;
-
-    const detail = await notesStore.actions.updateNotePinned(
-      selectedNoteId,
-      !noteDetail.is_pinned,
-    );
-    await notesStore.actions.loadNotes();
-    void selectNote(detail.id);
-  };
-
   const handleCreateNote = async () => {
     prepareNoteCreation();
     const selectedCategory = customList.find((cat) => cat.id === selectedId);
@@ -106,7 +88,11 @@ export default function EditorToolbar({
   };
 
   return (
-    <header className="editor-toolbar">
+    <header
+      className="editor-toolbar"
+      data-tauri-drag-region
+      onMouseDown={startWindowDrag}
+    >
       <button
         type="button"
         className={`toolbar-btn toolbar-icon-btn note-list-toggle-btn ${
@@ -151,42 +137,7 @@ export default function EditorToolbar({
               </option>
             ))}
           </select>
-          <button
-            type="button"
-            className={`toolbar-btn ${
-              noteDetail.is_pinned ? "toolbar-btn-active" : ""
-            }`}
-            onClick={() => {
-              void handleToggleImportant();
-            }}
-          >
-            {noteDetail.is_pinned ? "取消标记" : "标记为重要"}
-          </button>
-          {!pdfActive && (
-            <>
-              <button
-                type="button"
-                className="toolbar-btn"
-                disabled={noteSummaryLoading}
-                onClick={() => {
-                  void onCreateNoteSummary();
-                }}
-              >
-                {noteSummaryLoading ? "总结中..." : "总结笔记"}
-              </button>
-              <button
-                type="button"
-                className="toolbar-btn"
-                disabled={aiTermsLoading}
-                onClick={() => {
-                  void onExplainTerms();
-                }}
-              >
-                {aiTermsLoading ? "分析中..." : "AI 名词解释"}
-              </button>
-              <span className="toolbar-divider" aria-hidden="true" />
-            </>
-          )}
+          <span className="toolbar-divider" aria-hidden="true" />
         </>
       )}
       <button

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "@tanstack/react-store";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   buildToc,
   navItems,
@@ -23,6 +24,7 @@ import { AppActionsProvider } from "./context/AppActionsContext";
 import { usePdfDocuments } from "./hooks/usePdfDocuments";
 import { useNoteAi } from "./hooks/useNoteAi";
 import { getNotesBySelectedGroup, isTodayNote } from "./utils/noteFilters";
+import { startWindowDrag } from "./utils/windowDrag";
 import "./App.css";
 
 function App() {
@@ -156,6 +158,10 @@ function App() {
   const sourcePdf = noteDetail.pdf_document_id
     ? pdfDocuments.find((document) => document.id === noteDetail.pdf_document_id)
     : null;
+  const shouldShowSourcePdf =
+    !["summary", "note_summary", "pdf_summary", "web_summary"].includes(
+      noteDetail.note_type,
+    );
   const activePdfDocumentId = pdfDocument?.id ?? null;
 
   const handleSelectNote = useCallback(async (id: string) => {
@@ -217,6 +223,56 @@ function App() {
       if (settingsCloseTimer.current !== null) {
         window.clearTimeout(settingsCloseTimer.current);
       }
+    };
+  }, []);
+
+  // Persist any pending note edits before the window closes. The blur-based
+  // save path in `EditorContent` is best-effort and never fires when the user
+  // closes the window while the editor still has focus, so we hook into both
+  // the Tauri close-requested event and the browser's `beforeunload` fallback
+  // and flush every dirty note synchronously.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let closed = false;
+
+    const flushAll = () => {
+      void notesStore.actions.flushAllPendingNotes();
+    };
+
+    const handleBeforeUnload = () => {
+      flushAll();
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
+    getCurrentWindow()
+      .onCloseRequested(async (event) => {
+        if (closed) return;
+        closed = true;
+        event.preventDefault();
+        try {
+          await notesStore.actions.flushAllPendingNotes();
+        } catch (err) {
+          console.error("flush before close failed", err);
+        } finally {
+          await getCurrentWindow().destroy();
+        }
+      })
+      .then((unlistenFn) => {
+        if (closed) {
+          unlistenFn();
+        } else {
+          unlisten = unlistenFn;
+        }
+      })
+      .catch((err) => {
+        console.error("register close-requested failed", err);
+      });
+
+    return () => {
+      closed = true;
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      if (unlisten) unlisten();
     };
   }, []);
 
@@ -298,6 +354,11 @@ function App() {
       }}
     >
       <div className={`app ${hideNoteListPanel ? "app-note-list-hidden" : ""}`}>
+        <div
+          className="traffic-light-drag-region"
+          data-tauri-drag-region
+          onMouseDown={startWindowDrag}
+        />
         <Sidebar
           settingsActive={settingsOpen}
           onOpenSettings={toggleSettings}
@@ -313,8 +374,6 @@ function App() {
           <EditorToolbar
             selectedNoteId={selectedNoteId}
             noteDetail={noteDetail}
-            aiTermsLoading={noteAi.aiTermsLoading}
-            noteSummaryLoading={noteAi.noteSummaryLoading}
             pdfLoading={pdfLoading}
             pdfActive={Boolean(pdfDocument)}
             noteListVisible={!hideNoteListPanel}
@@ -326,8 +385,6 @@ function App() {
               closeSettings();
               setGlobalSearchOpen(true);
             }}
-            onCreateNoteSummary={noteAi.createNoteSummary}
-            onExplainTerms={noteAi.explainTerms}
           />
           {pdfDocument ? (
             <div className="editor-workspace">
@@ -365,14 +422,18 @@ function App() {
               <NoteHeader
                 noteDetail={noteDetail}
                 sourceNoteTitle={sourceNoteTitle}
-                sourcePdfName={sourcePdf?.name}
+                sourcePdfName={shouldShowSourcePdf ? sourcePdf?.name : undefined}
                 termCount={noteAi.termPanelTerms.length}
                 termSidebarOpen={termSidebarOpen}
+                noteSummaryLoading={noteAi.noteSummaryLoading}
                 onOpenSourceNote={
                   sourceNoteTitle ? handleOpenSourceNote : undefined
                 }
-                onOpenSourcePdf={sourcePdf ? handleOpenSourcePdf : undefined}
+                onOpenSourcePdf={
+                  shouldShowSourcePdf && sourcePdf ? handleOpenSourcePdf : undefined
+                }
                 onOpenTerms={() => setTermSidebarOpen(true)}
+                onCreateNoteSummary={noteAi.createNoteSummary}
               />
               <div className="editor-workspace-body">
                 <EditorContent

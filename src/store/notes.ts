@@ -113,7 +113,43 @@ export const notesStore = new Store<NotesState, NotesActions>(
     list: [],
     details: {},
   },
-  (store) => ({
+  (store) => {
+    // In-memory buffer of the latest unsaved edits per note id, used to
+    // guarantee a synchronous flush before the window closes. The blur-based
+    // save path is best-effort and may never fire when the user closes the
+    // window while the editor still has focus.
+    const pendingEdits = new Map<
+      string,
+      { title: string; content: string }
+    >();
+
+    const flushPendingEdits = async (id: string) => {
+      const pending = pendingEdits.get(id);
+      if (!pending) return;
+
+      pendingEdits.delete(id);
+
+      const current = store.get().details[id];
+      if (!current?.note_id) return;
+
+      try {
+        const note = await invoke<DbNote>("update_notes", {
+          id: current.note_id,
+          title: pending.title,
+          content: pending.content,
+        });
+        store.setState((prev) =>
+          updateLocalNote(prev, `db-${note.id}`, note.title, note.content),
+        );
+      } catch (err) {
+        // Re-queue so a later flush attempt can retry before exit.
+        pendingEdits.set(id, pending);
+        console.error("flushPendingNote failed", err);
+        throw err;
+      }
+    };
+
+    return {
     loadNotes: async () => {
       const notes = await invoke<DbNote[]>("get_notes");
       const dbList = notes.map((note) => toNoteListItem(note));
@@ -169,20 +205,44 @@ export const notesStore = new Store<NotesState, NotesActions>(
     updateNoteTitleLocal: (id, title) => {
       store.setState((prev) => updateLocalNoteTitle(prev, id, title));
     },
+    updateNoteLocal: (id, title, content) => {
+      store.setState((prev) => updateLocalNote(prev, id, title, content));
+      pendingEdits.set(id, { title, content });
+    },
     updateNote: async (id, title, content) => {
       const current = store.get().details[id];
       store.setState((prev) => updateLocalNote(prev, id, title, content));
 
-      if (!current?.note_id) return;
+      if (!current?.note_id) {
+        // Still record the edit so a later flush can persist it once the
+        // note has been promoted to a DB row.
+        pendingEdits.set(id, { title, content });
+        return;
+      }
 
-      const note = await invoke<DbNote>("update_notes", {
-        id: current.note_id,
-        title,
-        content,
-      });
-      store.setState((prev) =>
-        updateLocalNote(prev, `db-${note.id}`, note.title, note.content),
-      );
+      pendingEdits.set(id, { title, content });
+
+      try {
+        const note = await invoke<DbNote>("update_notes", {
+          id: current.note_id,
+          title,
+          content,
+        });
+        pendingEdits.delete(id);
+        store.setState((prev) =>
+          updateLocalNote(prev, `db-${note.id}`, note.title, note.content),
+        );
+      } catch (err) {
+        console.error("updateNote failed", err);
+        throw err;
+      }
+    },
+    flushPendingNote: async (id) => {
+      await flushPendingEdits(id);
+    },
+    flushAllPendingNotes: async () => {
+      const ids = Array.from(pendingEdits.keys());
+      await Promise.all(ids.map((id) => flushPendingEdits(id)));
     },
     updateNoteGroup: async (id, group_id) => {
       const current = store.get().details[id];
@@ -254,6 +314,9 @@ export const notesStore = new Store<NotesState, NotesActions>(
           details,
         };
       });
+
+      pendingEdits.delete(id);
     },
-  }),
+  };
+  },
 );

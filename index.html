@@ -4,10 +4,53 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>notepad-tauri</title>
+    <style>
+      html,
+      body,
+      #root {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #1d1f23;
+      }
+
+      /* Inline boot shell — gets replaced as soon as React mounts. Shown
+         immediately so the traffic-light region never sits on a blank
+         surface while the JS bundle is being parsed. */
+      .boot-shell {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: rgba(255, 255, 255, 0.55);
+        font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        letter-spacing: 0.04em;
+      }
+
+      .boot-shell::after {
+        content: "";
+        margin-left: 10px;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 2px solid rgba(255, 255, 255, 0.18);
+        border-top-color: rgba(255, 255, 255, 0.65);
+        animation: boot-shell-spin 0.9s linear infinite;
+      }
+
+      @keyframes boot-shell-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
   </head>
 
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="boot-shell">正在加载笔记…</div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

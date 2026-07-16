@@ -5,7 +5,14 @@
   line-height: 1.5;
   font-weight: 400;
   color: #1a1a1a;
-  background-color: #f0f2f5;
+  background-color: transparent;
+  --app-window-radius: 32px;
+  --app-surface-bg: #fafbfc;
+  --sidebar-width: 280px;
+  --sidebar-shadow-x: 0;
+  --sidebar-shadow-y: 0;
+  --sidebar-shadow-blur: 6px;
+  --sidebar-shadow-color: rgba(31, 41, 55, 0.12);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -24,6 +31,10 @@ body,
   margin: 0;
   height: 100%;
   overflow: hidden;
+}
+
+body {
+  background: transparent;
 }
 
 button {

@@ -30,6 +30,13 @@
   min-width: 0;
 }
 
+.note-header-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
 .markdown-source {
   display: flex;
   flex-direction: column;
@@ -109,6 +116,51 @@
   font-weight: 700;
   line-height: 13px;
   text-align: center;
+}
+
+.note-header-icon-btn {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  color: #475569;
+  background: #fff;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.note-header-icon-btn:hover {
+  border-color: #c5cdd8;
+  color: #444;
+  background: #f8f9fa;
+}
+
+.note-header-icon-btn-active,
+.note-header-icon-btn-active:hover {
+  border-color: #fde68a;
+  color: #d97706;
+  background: #fffbeb;
+}
+
+.note-header-icon-btn:disabled,
+.note-header-icon-btn:disabled:hover {
+  cursor: default;
+  color: #9ca3af;
+  border-color: #e5e7eb;
+  background: #f9fafb;
+}
+
+.note-header-icon {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
 }
 
 .source-note-row {

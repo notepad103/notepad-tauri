@@ -8,6 +8,7 @@ import { NOTE_TYPE_ICON, NOTE_TYPE_LABEL } from "../constants/notes";
 import type { NavFilter, NoteType } from "../types/notes";
 import { isTodayNote } from "../utils/noteFilters";
 import { displayNoteTitle } from "../utils/noteText";
+import { startWindowDrag } from "../utils/windowDrag";
 
 interface NoteListPanelProps {
   selectedNoteId: string;
@@ -22,7 +23,7 @@ export default function NoteListPanel({
   const noteListItems = useStore(notesStore, (state) => state.list);
   const { noteCreated, prepareNoteCreation, selectNote } = useAppActions();
   const [searchQuery, setSearchQuery] = useState("");
-  const [typeFilter, setTypeFilter] = useState<NoteType | "all">("all");
+  const [typeFilter, setTypeFilter] = useState<NoteType | "all">("normal");
 
   const isCustomCategory = useMemo(() => {
     return customList.some((cat) => cat.id === selectedId);
@@ -43,6 +44,7 @@ export default function NoteListPanel({
 
   const typeFilterOptions = useMemo(() => {
     const existingTypes = new Set(noteListItems.map((note) => note.note_type));
+    existingTypes.add("normal");
     return NOTE_TYPE_ORDER.filter((type) => existingTypes.has(type)).map(
       (type) => ({
         value: type,
@@ -218,7 +220,11 @@ export default function NoteListPanel({
 
   return (
     <section className="note-list-panel">
-      <header className="panel-header">
+      <header
+        className="panel-header"
+        data-tauri-drag-region
+        onMouseDown={startWindowDrag}
+      >
         <h2>笔记列表</h2>
         <p>{`${scopeLabel} · ${filteredNotes.length}`}</p>
       </header>

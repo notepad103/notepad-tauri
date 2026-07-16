@@ -11,7 +11,7 @@ import type {
   TermAiSections,
   UseNoteAiOptions,
 } from "../types/ai";
-import type { PdfCaptureNotePayload } from "../types/pdf";
+import type { PdfCaptureNotePayload, PdfChunk } from "../types/pdf";
 import {
   appendMarkdownSection,
   contentToPlainText,
@@ -66,6 +66,20 @@ function splitTermAiSections(markdown: string): TermAiSections {
   });
 
   return sections;
+}
+
+function pdfChunksToPlainContent(chunks: PdfChunk[]): string {
+  return chunks
+    .filter((chunk) => chunk.content.trim())
+    .map((chunk) =>
+      [
+        `PDF 第 ${chunk.page_start}-${chunk.page_end} 页，切片 ${
+          chunk.chunk_index + 1
+        }：`,
+        chunk.content.trim(),
+      ].join("\n"),
+    )
+    .join("\n\n");
 }
 
 function graphToArticleHtml(graph: KnowledgeGraph): string {
@@ -177,6 +191,22 @@ export function useNoteAi({
     const sourceContent = noteDetail.content?.trim() ?? "";
     return contentToPlainText(sourceContent);
   }, [noteDetail.content]);
+
+  const termSourceContent = useCallback(async () => {
+    if (noteDetail.note_type !== "pdf_note" || !noteDetail.pdf_document_id) {
+      return notePlainContent();
+    }
+
+    const chunks = await invoke<PdfChunk[]>("get_pdf_chunks", {
+      pdfDocumentId: noteDetail.pdf_document_id,
+    });
+    return pdfChunksToPlainContent(chunks);
+  }, [noteDetail.note_type, noteDetail.pdf_document_id, notePlainContent]);
+
+  const emptyTermSourceMessage =
+    noteDetail.note_type === "pdf_note"
+      ? "当前 PDF 还没有可分析的文本切片，请先在 PDF 阅读器生成 AI 总结或向量索引"
+      : "当前笔记没有可分析的内容";
 
   const resetTermExplain = useCallback(() => {
     termExplainRequestId.current += 1;
@@ -295,14 +325,15 @@ export function useNoteAi({
 
   const explainTerms = useCallback(async () => {
     if (!selectedNoteId || !noteDetail.note_id || aiTermsLoading) return;
-    const plainContent = notePlainContent();
-    if (!plainContent) {
-      alert("当前笔记没有可分析的内容");
-      return;
-    }
 
     setAiTermsLoading(true);
     try {
+      const plainContent = await termSourceContent();
+      if (!plainContent) {
+        alert(emptyTermSourceMessage);
+        return;
+      }
+
       const terms = await invoke<Omit<NoteTerm, "sort">[]>(
         "explain_article_terms",
         {
@@ -327,10 +358,11 @@ export function useNoteAi({
     }
   }, [
     aiTermsLoading,
+    emptyTermSourceMessage,
     noteDetail.note_id,
     noteDetail.title,
-    notePlainContent,
     selectedNoteId,
+    termSourceContent,
   ]);
 
   const selectTerm = useCallback(
@@ -344,9 +376,13 @@ export function useNoteAi({
       setTermGraphError("");
       setTermArticleError("");
 
-      const plainContent = notePlainContent();
+      const plainContent = await termSourceContent();
       if (!plainContent) {
-        setTermExplainError("当前笔记没有可用于解释的正文");
+        setTermExplainError(
+          noteDetail.note_type === "pdf_note"
+            ? "当前 PDF 还没有可用于解释的文本切片"
+            : "当前笔记没有可用于解释的正文",
+        );
         return;
       }
 
@@ -383,14 +419,18 @@ export function useNoteAi({
         }
       }
     },
-    [noteDetail.title, notePlainContent],
+    [noteDetail.note_type, noteDetail.title, termSourceContent],
   );
 
   const generateTermGraph = useCallback(async () => {
     if (!selectedTerm || termGraphLoading) return;
-    const plainContent = notePlainContent();
+    const plainContent = await termSourceContent();
     if (!plainContent) {
-      setTermGraphError("当前笔记没有可用于生成图谱的正文");
+      setTermGraphError(
+        noteDetail.note_type === "pdf_note"
+          ? "当前 PDF 还没有可用于生成图谱的文本切片"
+          : "当前笔记没有可用于生成图谱的正文",
+      );
       return;
     }
 
@@ -413,7 +453,13 @@ export function useNoteAi({
     } finally {
       setTermGraphLoading(false);
     }
-  }, [noteDetail.title, notePlainContent, selectedTerm, termGraphLoading]);
+  }, [
+    noteDetail.note_type,
+    noteDetail.title,
+    selectedTerm,
+    termGraphLoading,
+    termSourceContent,
+  ]);
 
   const generateTermArticle = useCallback(async () => {
     if (!selectedTerm || !noteDetail.note_id || termArticleLoading) {

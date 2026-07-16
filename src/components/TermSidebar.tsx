@@ -145,7 +145,7 @@ export default function TermSidebar({
                 );
               })}
               {!terms.length && (
-                <li className="term-empty">点击工具栏 AI 名词解释生成名词</li>
+                <li className="term-empty">点击生成按钮创建名词列表</li>
               )}
             </ul>
           ) : (

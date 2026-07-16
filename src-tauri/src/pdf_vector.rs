@@ -568,56 +568,77 @@ fn write_bundled_install_marker(target_dir: &Path, signature: &str) -> Result<()
 }
 
 fn dir_signature(dir: &Path) -> Result<String, String> {
-    let mut file_count = 0usize;
-    let mut total_size = 0u64;
-    let mut newest_modified = 0u64;
+    // Bundled embedding models live inside a single model directory containing
+    // a `blobs/` folder plus a tiny `snapshots/` folder. Walking the entire
+    // tree (including 90 MB of tokenizer/onnx blobs) every time the app
+    // launches was a measurable chunk of the startup delay. We only need a
+    // fingerprint robust enough to detect resource-dir updates, so we sum
+    // the size of every directory entry but never stat the contents of the
+    // large `blobs/` directory — its own mtime plus the on-disk size is a
+    // good enough signal that anything inside it changed.
+    let mut file_count: usize = 0;
+    let mut total_size: u64 = 0;
+    let mut newest_modified: u64 = 0;
 
-    collect_dir_signature(dir, &mut file_count, &mut total_size, &mut newest_modified)?;
+    bump_signature_recursive(dir, 0, &mut file_count, &mut total_size, &mut newest_modified)?;
     Ok(format!("{file_count}:{total_size}:{newest_modified}"))
 }
 
-fn collect_dir_signature(
+fn bump_signature_recursive(
     dir: &Path,
+    depth: usize,
     file_count: &mut usize,
     total_size: &mut u64,
     newest_modified: &mut u64,
 ) -> Result<(), String> {
-    for entry in std::fs::read_dir(dir).map_err(|err| {
+    let entries = std::fs::read_dir(dir).map_err(|err| {
         format!(
             "读取内置 embedding 模型目录失败：{}：{err}",
             dir.to_string_lossy()
         )
-    })? {
+    })?;
+
+    for entry in entries {
         let entry = entry.map_err(|err| err.to_string())?;
-        let path = entry.path();
-        let metadata = std::fs::metadata(&path).map_err(|err| {
-            format!(
-                "读取内置 embedding 模型文件失败：{}：{err}",
-                path.to_string_lossy()
-            )
-        })?;
-
+        let metadata = entry.metadata().map_err(|err| err.to_string())?;
+        if metadata.is_file() {
+            *file_count += 1;
+            *total_size = total_size.saturating_add(metadata.len());
+            record_mtime(&metadata, newest_modified);
+            continue;
+        }
         if metadata.is_dir() {
-            collect_dir_signature(&path, file_count, total_size, newest_modified)?;
-            continue;
+            // Avoid descending into the heavy `blobs/` directory — its mtime
+            // moves whenever the resource directory is updated, so a single
+            // stat here is enough for change detection.
+            let is_blobs = entry.file_name() == "blobs" && depth <= 1;
+            if !is_blobs {
+                bump_signature_recursive(
+                    &entry.path(),
+                    depth + 1,
+                    file_count,
+                    total_size,
+                    newest_modified,
+                )?;
+            }
+            record_mtime(&metadata, newest_modified);
         }
-
-        if !metadata.is_file() {
-            continue;
-        }
-
-        *file_count += 1;
-        *total_size += metadata.len();
-        let modified = metadata
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-            .map(|duration| duration.as_secs())
-            .unwrap_or(0);
-        *newest_modified = (*newest_modified).max(modified);
     }
 
     Ok(())
+}
+
+fn record_mtime(metadata: &std::fs::Metadata, newest_modified: &mut u64) {
+    let Ok(modified) = metadata.modified() else {
+        return;
+    };
+    let Ok(duration) = modified.duration_since(UNIX_EPOCH) else {
+        return;
+    };
+    let secs = duration.as_secs();
+    if secs > *newest_modified {
+        *newest_modified = secs;
+    }
 }
 
 fn current_embedding_model() -> Result<EmbeddingModel, String> {

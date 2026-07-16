@@ -16,10 +16,26 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&app_data_dir)?;
-            let resource_dir = app.path().resource_dir().ok();
-            pdf_vector::install_bundled_embedding_models(&app_data_dir, resource_dir.as_deref())?;
-            std::env::set_current_dir(app_data_dir)?;
+            std::env::set_current_dir(&app_data_dir)?;
             base::sql::init_db()?;
+
+            // Bundled embedding models are not needed for the first paint —
+            // they are only consulted by the PDF RAG/vector commands, which
+            // already run on background tasks. Copying ~90 MB of blobs
+            // synchronously inside `setup` blocks the WebView from showing
+            // until the file copy finishes, so we hand the work off to the
+            // blocking thread pool and return immediately.
+            let resource_dir = app.path().resource_dir().ok();
+            let install_app_data_dir = app_data_dir.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(err) = pdf_vector::install_bundled_embedding_models(
+                    &install_app_data_dir,
+                    resource_dir.as_deref(),
+                ) {
+                    eprintln!("install_bundled_embedding_models failed: {err}");
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

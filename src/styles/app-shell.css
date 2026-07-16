@@ -2,16 +2,26 @@
 .app {
   position: relative;
   display: grid;
-  grid-template-columns: 200px minmax(220px, 280px) minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width) minmax(220px, 280px) minmax(0, 1fr);
   min-width: 0;
   height: 100vh;
   overflow: hidden;
-  background: #f5f6f8;
+  border-radius: var(--app-window-radius);
+  background: var(--app-surface-bg);
   transition: grid-template-columns 0.22s ease;
 }
 
 .app-note-list-hidden {
-  grid-template-columns: 200px minmax(0px, 0px) minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width) minmax(0px, 0px) minmax(0, 1fr);
+}
+
+.traffic-light-drag-region {
+  position: absolute;
+  top: 0;
+  left: 82px;
+  z-index: 30;
+  width: 118px;
+  height: 46px;
 }
 
 .editor-shell {
@@ -26,7 +36,7 @@
   top: 0;
   right: 0;
   bottom: 0;
-  left: 200px;
+  left: var(--sidebar-width);
   z-index: 20;
   display: flex;
   min-width: 0;
