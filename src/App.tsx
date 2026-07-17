@@ -49,7 +49,13 @@ function App() {
     () => getNotesBySelectedGroup(notesState.list, selectedId, customList),
     [customList, notesState.list, selectedId],
   );
-  const firstSelectedGroupNoteId = selectedGroupNotes[0]?.id ?? "";
+  // 笔记列表默认仅展示「普通笔记」，因此编辑区也优先选中当前分类下的
+  // 第一条普通笔记，避免列表与编辑区展示不一致。
+  const firstVisibleGroupNoteId =
+    selectedGroupNotes.find((note) => note.note_type === "normal")?.id ??
+    selectedGroupNotes[0]?.id ??
+    "";
+  const firstSelectedGroupNoteId = firstVisibleGroupNoteId;
   const noteListAutoHidden = selectedGroupNotes.length === 0;
   const hideNoteListPanel = noteListAutoHidden || noteListManuallyHidden;
 
