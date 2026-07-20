@@ -123,10 +123,11 @@ export default function EditorContent({
     if (editor) {
       editor.commands.setContent(
         isHtmlContent(nextContent) ? nextContent : markdownToHtml(nextContent),
+        { emitUpdate: false },
       );
       scheduleHeadingIds(editor.view.dom);
     }
-  }, [editor, noteDetail]);
+  }, [editor, noteDetail.id]);
 
   useEffect(() => {
     scheduleHeadingIds(editor?.view.dom ?? null);
